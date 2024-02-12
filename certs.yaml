@@ -1,0 +1,37 @@
+---
+san:
+  country: US
+  domains:
+  - .local.nunet.net
+  - .default
+  - .default.svc
+  - .default.svc.cluster
+  - .default.svc.cluster.local
+  email: sean_mccully@yahoo.com
+  locality: Silverlake
+  state: Washington
+certs:
+  client:
+    etcd:
+    - kube-etcd-healthcheck-client
+    - kube-apiserver-etcd-client
+    kubernetes:
+    - service-accounts
+    - kubelet-client
+    - kube-apiserver-kubelet-client;systems:masters
+    - kube-controller-manager;system:kube-controller-manager
+    - kube-scheduler;system:kube-scheduler
+    - kubernetes-super-admin;system:masters
+    - admin;system:masters
+    - kube-proxy;system:node-proxier
+    - calico-node
+    kubernetes-front-proxy:
+    - front-proxy-client
+  server:
+    etcd:
+    - kube-etcd
+    - kube-etcd-peer
+    kubernetes:
+    - kube-apiserver
+    - calico-cni
+    - calico-typha

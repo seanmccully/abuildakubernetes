@@ -1,0 +1,15 @@
+hosts: # Hosts to build the kubernetes cluster, all hosts are considered control plane nodes, TODO: Include workers only
+  - host1
+  - host2
+control-plane-subnet: 172.12.12.0/24 # Control Plane CIDR 
+cluster-ip: 172.12.12.125 # VRRP VIP for kubernetes api server, needs to be in same CIDR as control plane subnet
+service-cidr: 10.0.0.0/22 # Service CIDR to use for Kubernetes services
+cluster-cidr: 10.3.0.0/16 # Cluster CIDR to use for Kubernetes services
+cluster-domain: local.net # Kubernetes DNS domain
+cluster-name: abuildakubernetes # Kubernetes cluster name
+build-dir: /opt/cluster # Where to build the sources and certificate authority
+kube-dir: /etc/kubernetes # Where to install the kubernetes services
+kube-pki: /etc/kubernetes/pki # Where to install the kubernetes certs
+kubelet-dir: /var/lib/kubelet # Where to install kubelet services
+kube-proxy-dir: /var/lib/kube-proxy # Where to install the kube-proxy services
+kube-log-dir: /var/log/kubernetes # Kubernetes LOG dir

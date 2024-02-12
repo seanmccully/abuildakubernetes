@@ -1,0 +1,16 @@
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+verbosity: 2
+address: IP_ADDR
+port: 10250
+clusterDNS: CLUSTER_DNS
+clusterDomain: CLUSTER_DOMAIN
+cgroupDriver: systemd
+serializeImagePulls: false
+maxParallelImagePulls: 100
+failSwapOn: false
+evictionHard:
+    memory.available:  "100Mi"
+    nodefs.available:  "10%"
+    nodefs.inodesFree: "5%"
+    imagefs.available: "15%"
