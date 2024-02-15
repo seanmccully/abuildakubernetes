@@ -317,6 +317,7 @@ function exec_script() {
     _script=$1;
     _remote=${2:-false};
     info "started exec_script ${_script} ${_remote}";
+    [ -d "./logs" ] && exec_c "mkdir -p logs";
     [ -z $_script ] && error_message "Script name required";
     [ ! -f "./$_script" ] && error_message "Script ${_script} does not exist";
     cd $script_dir;
@@ -530,4 +531,3 @@ function main() {
 
 trap "trap_signint" 2;
 main;
-#kube_proxy;

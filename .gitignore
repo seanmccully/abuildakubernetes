@@ -1,2 +1,3 @@
 logs/*.err
 logs/*.out
+hosts.yaml
