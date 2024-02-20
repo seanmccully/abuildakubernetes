@@ -17,6 +17,21 @@ declare -A peer_ips;
 
 DEBUG=${DEBUG:-0};
 VERBOSE=${VERBOSE:-1};
+BUILD_SOURCE=true;
+RUN_CERTS=true;
+RUN_SETUP=true;
+SERVICES=true;
+CLEAN=true;
+usage="""$(basename "$0") [-h] [-s -c -x -y -l] -- Options are inverted to not run source-builder [-s]
+
+where:
+    -s, --src -- Exclude running source-builder.sh
+    -c, --certs -- If the certs already exist they will not overwrite, otherwise include this option.
+    -x, --setup -- Exclude running setup-sources.sh
+    -y, --services -- Do not stop or start services
+    -l, --clean -- Clean previous builds, defaults to true
+
+"""
 MESSAGE_HEADER=${MESSAGE_HEADER:-common};
 script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 config_yaml="${script_dir}/config.yaml";

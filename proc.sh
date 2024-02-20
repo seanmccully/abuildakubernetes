@@ -317,7 +317,7 @@ function exec_script() {
     _script=$1;
     _remote=${2:-false};
     info "started exec_script ${_script} ${_remote}";
-    [ -d "./logs" ] && exec_c "mkdir -p logs";
+    [ ! -d "./logs" ] && exec_c "mkdir -p logs";
     [ -z $_script ] && error_message "Script name required";
     [ ! -f "./$_script" ] && error_message "Script ${_script} does not exist";
     cd $script_dir;
@@ -487,7 +487,7 @@ function start_services() {
 function cleanup() {
 
     info "started cleanup";
-    stop_services;
+    [ $SERVICES == true ] && stop_services;
     kubelet_dir=$($YQ -r '.kubelet-dir' $config_yaml);
     kube_proxy_dir=$($YQ -r '.kube-proxy-dir' $config_yaml);
     exec_c "rm -rf logs/*.{err,out}";
@@ -511,23 +511,64 @@ function trap_sigint() {
     error_message "SIGINT";
 }
 
+function argparse() {
+    info "finished argparse";
+}
 
 function main() {
     info "started main";
-    cleanup;
+    [ $CLEAN == true ] && cleanup;
     set_peer_ips;
-    exec_script "source-builder.sh" true;
+    [ $BUILD_SOURCE == true ] && exec_script "source-builder.sh" true;
     generate_etcd_token;
     info "Creating Certificate Authority";
     # Create CA and certs for kubernetes cluster
-    exec_script "cert-manager.sh" false;
+    [ $RUN_CERTS == true ] && exec_script "cert-manager.sh" false;
     keepalived_configure;
     kube_configure;
     exec_script "setup-sources.sh" true;
-    start_services;
+    [ $SERVICES == true ] && start_services;
     provision_calico;
     info "finished main";
 }
 
-trap "trap_signint" 2;
+
+ARGS=$(getopt -o scxylh --long src,certs,setup,services,clean,help -- "$@")
+if [[ $? -ne 0 ]]; then
+    printf "${usage}";
+    exit 1;
+fi
+
+eval set -- "$ARGS"
+while [ : ]; do
+    case "$1" in
+    -s | --src)
+        BUILD_SOURCE=false;
+        shift;
+        ;;
+    -c | --certs)
+        RUN_CERTS=false;
+        shift;
+        ;;
+    -x | --setup)
+        RUN_SETUP=false;
+        shift;
+        ;;
+    -y | --services)
+        SERVICES=false;
+        shift;
+        ;;
+    -l | --clean)
+        CLEAN=false;
+        shift;
+        ;;
+    -h | --help)
+        printf "${usage}";
+        exit 0;
+        ;;
+    --) shift;
+        break
+        ;;
+  esac
+done
 main;
