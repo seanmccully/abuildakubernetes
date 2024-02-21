@@ -103,6 +103,12 @@ function runc_build() {
     #install -m644 ./man/man8/runc*.8 /usr/local/share/man/man8/;
 }
 
+function cri_tools_build() {
+
+    exec_c "make clean";
+    exec_c "make && make install";
+
+}
 function containerd_build() {
 
     info "starting containerd_build"
@@ -252,6 +258,7 @@ function main() {
     clone_src $KUBE "kube_build";
     clone_src $CNI_PLUGINS "cni_plugins_build";
     clone_src $KEEPALIVED "keepalived_build";
+    clone_src $CRITOOLS "cri_tools_build";
     clone_src $HELM "helm_build";
     clone_src $CALICO "calico_build";
     info "finished main";

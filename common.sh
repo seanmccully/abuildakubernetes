@@ -120,6 +120,7 @@ RUNC="https://github.com/opencontainers/runc.git";
 KUBE_DOCS="https://github.com/kubernetes/website.git"
 KEEPALIVED="https://github.com/acassen/keepalived.git"
 HELM="https://github.com/helm/helm";
+CRITOOLS="https://github.com/kubernetes-sigs/cri-tools.git"
 
 function isRootUser() {
   [[ "$( whoami )" == "root" ]]
