@@ -86,6 +86,7 @@ function setup_etcd_conf() {
     $YQ -ir ".initial-cluster=\"${cluster}\"" $etcd_yml;
     $YQ -ir ".initial-cluster-token=\"${cluster_token}\"" $etcd_yml;
     $YQ -ir ".initial-cluster-state=\"new\"" $etcd_yml;
+    $YQ -ir ".log-level=\"info\"" $etcd_yml;
 
     $YQ -ir ".client-transport-security.cert-file=\"$ETCD_PKI/server.crt\"" $etcd_yml;
     $YQ -ir ".client-transport-security.key-file=\"$ETCD_PKI/server.key\"" $etcd_yml;
