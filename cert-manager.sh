@@ -219,7 +219,11 @@ EOF
         orgName="$intermediate";
     fi
 
-    if [[ $prefix == "system:nodes" ]]; then
+    if [[ $prefix == "system:masters" ]]; then
+        writeHosts $icnf $component;
+        orgName="${prefix}";
+        cn_prefix="";
+    elif [[ $prefix == "system:nodes" ]]; then
         writeHosts $icnf $component;
         orgName="${prefix}";
         cn_prefix="${prefix%*s}:";
@@ -335,7 +339,7 @@ function cleanup() {
 function main() {
 
     info "starting main";
-    #cleanup;
+    [ $CLEAN == true ] && cleanup;
     mkdir -p $CERT_DIR;
     cd $CERT_DIR;
 

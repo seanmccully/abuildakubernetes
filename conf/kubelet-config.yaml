@@ -1,7 +1,7 @@
 apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
 verbosity: 2
-address: IP_ADDR
+address: 0.0.0.0
 port: 10250
 clusterDNS: 
   - CLUSTER_DNS

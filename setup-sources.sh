@@ -206,7 +206,7 @@ function setup_kubelet() {
     dns_ip="${service_cidr%.*}.10";
 
     mkdir -p $kubelet_dir;
-    $SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
+    #$SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
     $SED -i "s/CLUSTER_DOMAIN/${cluster_domain}/g" $kubelet_config;
     $SED -i "s/CLUSTER_DNS/${dns_ip}/g" $kubelet_config;
 

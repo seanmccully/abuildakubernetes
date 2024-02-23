@@ -249,6 +249,7 @@ function cleanup() {
 
 function main() {
     info "starting main";
+    [ $CLEAN == true ] && cleanup;
     clone_src $GO "go_build";
     clone_src $GOLANGCI "golangci_build";
     clone_src $KUBE_DOCS;

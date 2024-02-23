@@ -310,6 +310,7 @@ function exec_remote() {
         for host in $(yq -r ".hosts | .[]" $config_yaml); do
             exec_c "${SCP_COMMAND} ${_script} ${host}:/tmp/${_script}"
             exec_c "${SCP_COMMAND} ./common.sh ${host}:/tmp/common.sh"
+            [ $CLEAN == true ] && exec_c "sed -i \"s/CLEAN=false/CLEAN=true/g\" /tmp/common.sh" ${host};
             exec_c "${SCP_COMMAND} ${config_yaml} ${host}:/tmp/config.yaml"
             exec_c "${SCP_COMMAND} ${hosts_yaml} ${host}:/tmp/hosts.yaml"
             exec_c "chmod 744 /tmp/${_script}" ${host};
@@ -583,7 +584,7 @@ while [ : ]; do
         shift;
         ;;
     -l | --clean)
-        CLEAN=false;
+        CLEAN=true;
         shift;
         ;;
     -h | --help)
@@ -596,3 +597,4 @@ while [ : ]; do
   esac
 done
 main;
+

@@ -43,7 +43,7 @@ BUILD_SOURCE=true;
 RUN_CERTS=true;
 RUN_SETUP=true;
 SERVICES=true;
-CLEAN=true;
+CLEAN=false;
 usage="""$(basename "$0") [-h] [-s -c -x -y -l] -- Options are inverted to not run source-builder [-s]
 
 where:
