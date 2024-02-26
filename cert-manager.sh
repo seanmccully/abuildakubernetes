@@ -170,8 +170,6 @@ function configureAlts() {
     dns_alts="DNS:localhost";
 
     if [ $node_name != false ]; then
-
-
         for ip in $($YQ -r ".${node_name} | .[]" $hosts_yaml); do
             if [[ "${ip}" != "127.0.0.1" ]]; then
                 ip_alts="${ip_alts},IP:${ip}";
@@ -183,7 +181,6 @@ function configureAlts() {
             dns_alts="${dns_alts},DNS:${node_name}${domains}";
         done
     else
-
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
             for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
                 if [[ "${ip}" != "127.0.0.1" ]]; then
