@@ -163,6 +163,8 @@ function writeHosts() {
     info "writeHosts $icnf $node_name";
     if [ $node_name != false ]; then
         c=2;
+        echo "IP.${c} = ${CLUSTER_IP}" >> $icnf;
+        c=$[$c + 1];
         for ip in $($YQ -r ".${node_name} | .[]" $hosts_yaml); do
             echo "IP.${c} = ${ip}" >> $icnf;
             c=$[$c + 1];
@@ -175,6 +177,8 @@ function writeHosts() {
         done
     else
         c=2;
+        echo "IP.${c} = ${CLUSTER_IP}" >> $icnf;
+        c=$[$c + 1];
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
             for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
                 echo "IP.${c} = ${ip}" >> $icnf;

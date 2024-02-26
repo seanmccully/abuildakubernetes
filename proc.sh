@@ -27,6 +27,7 @@
 #
 
 declare -a pids;
+pids_counter=0;
 MESSAGE_HEADER="proc";
 source ./common.sh;
 
@@ -314,9 +315,9 @@ function exec_remote() {
             exec_c "${SCP_COMMAND} ${config_yaml} ${host}:/tmp/config.yaml"
             exec_c "${SCP_COMMAND} ${hosts_yaml} ${host}:/tmp/hosts.yaml"
             exec_c "chmod 744 /tmp/${_script}" ${host};
-            exec_c "/tmp/${_script} 2> /tmp/${_script}.err 1> /tmp/${_script}.out &" $host;
-            pids[${i}]=$!;
-            i=$[$i + 1];
+            $SSH_COMMAND $host "/tmp/${_script} 2> /tmp/${_script}.err 1> /tmp/${_script}.out" &
+            pids[${pids_counter}]=$!;
+            pids_counter=$[$pids_counter + 1];
             info "started ${_script} on ${host}";
         done
     fi
@@ -346,11 +347,12 @@ function exec_script() {
     [ -z $_script ] && error_message "Script name required";
     [ ! -f "./$_script" ] && error_message "Script ${_script} does not exist";
     cd $script_dir;
+    pids_counter=0;
     info "starting local ${_script}";
-    exec_c "./${_script} 2> logs/${_script}.err 1> logs/${_script}.out &"
-    i=0;
-    pids[${i}]=$!
-    i=$[$i + 1];
+    ./${_script} 2> logs/${_script}.err 1> logs/${_script}.out &
+    pids[${pids_counter}]=$!
+
+    pids_counter=$[$pids_counter + 1];
     [[ $_remote == true ]] && exec_remote $_script;
     # Wait for source builder processes to finish;
     for pid in ${pids[*]}; do
@@ -481,13 +483,13 @@ function kube_configure() {
 function manage_services() {
     _s=${1:-stop};
     info "started manage_services ${_s}";
-    if [[ $_s == "start" ]]; then
-        sys_reload="${SYSTEMCTL} daemon-reload";
-        exec_c "${sys_reload}";
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "${sys_reload}" $host;
-        done
-    fi
+
+    sys_reload="${SYSTEMCTL} daemon-reload";
+    exec_c "${sys_reload}";
+    for host in $(yq -r ".hosts | .[]" $config_yaml); do
+        exec_c "${sys_reload}" $host;
+    done
+
     services=("containerd" "keepalived" "etcd" "kube-apiserver" "kube-scheduler" "kube-controller-manager" "kubelet" "kube-proxy");
     for service in ${services[@]}; do
         debug "manage_services ${_s} ${service}";
@@ -542,17 +544,23 @@ function argparse() {
 
 function main() {
     info "started main";
+    [ $CLEAN == false ] && info "Skipping cleanup";
     [ $CLEAN == true ] && cleanup;
+    [ $SERVICES == true ] && stop_services;
+    [ $SERVICES == false ] && info "Skipping stop services";
     set_peer_ips;
     [ $BUILD_SOURCE == true ] && exec_script "source-builder.sh" true;
+    [ $BUILD_SOURCE == false ] && info "Skipping source-builder.sh";
     generate_etcd_token;
     info "Creating Certificate Authority";
     # Create CA and certs for kubernetes cluster
     [ $RUN_CERTS == true ] && exec_script "cert-manager.sh" false;
+    [ $RUN_CERTS == false ] && info "Skipping cert-manager.sh";
     keepalived_configure;
     kube_configure;
     exec_script "setup-sources.sh" true;
     [ $SERVICES == true ] && start_services;
+    [ $SERVICES == false ] && info "Skipping start services";
     provision_calico;
     info "finished main";
 }
@@ -597,4 +605,3 @@ while [ : ]; do
   esac
 done
 main;
-

@@ -47,11 +47,11 @@ CLEAN=false;
 usage="""$(basename "$0") [-h] [-s -c -x -y -l] -- Options are inverted to not run source-builder [-s]
 
 where:
-    -s, --src -- Exclude running source-builder.sh
-    -c, --certs -- If the certs already exist they will not overwrite, otherwise include this option.
-    -x, --setup -- Exclude running setup-sources.sh
+    -s, --src -- Exclude source-builder.sh
+    -c, --certs -- Exclude cert-manager (idempotent) script.
+    -x, --setup -- Exclude setup-sources.sh
     -y, --services -- Do not stop or start services
-    -l, --clean -- Clean previous builds, defaults to true
+    -l, --clean -- Clean previous builds
 
 """
 MESSAGE_HEADER=${MESSAGE_HEADER:-common};
@@ -128,14 +128,15 @@ function isRootUser() {
 
 function exec_c() {
     command=$1;
+    ret_code=${2:-0};
     debug "start exec_c ${command}"
     _host=${2:-"local"};
     if [[ $_host == "local" ]]; then
-        eval "${command}" || error_message "${command} failed with err: $?"
+        eval "${command}" || error_message "${command} failed with err: $?" $ret_code
     else
         output=$($SSH_COMMAND $_host $command);
         ret=$($SSH_COMMAND $_host "echo $?");
-        [[ $ret == "0" ]] || error_message "${command} on ${_host} failed with err: $ret - $output";
+        [[ $ret == "0" ]] || error_message "${command} on ${_host} failed with err: $ret - $output" $ret_code;
     fi
     debug "finished exec_c ${command}";
 }
