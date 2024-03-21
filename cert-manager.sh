@@ -163,7 +163,11 @@ function writeHosts() {
     info "writeHosts $icnf $node_name";
     if [ $node_name != false ]; then
         c=2;
+
         echo "IP.${c} = ${CLUSTER_IP}" >> $icnf;
+        c=$[$c + 1];
+        service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
+        echo "IP.${c} = ${service_net_ip}" >> $icnf;
         c=$[$c + 1];
         for ip in $($YQ -r ".${node_name} | .[]" $hosts_yaml); do
             echo "IP.${c} = ${ip}" >> $icnf;
@@ -357,6 +361,5 @@ function main() {
     create_host_certs;
     info "finished main"
 }
-
 
 main;

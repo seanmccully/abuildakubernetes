@@ -67,6 +67,7 @@ SED=$(command -v sed);
 ssh=$(command -v ssh);
 scp=$(command -v scp);
 git=$(command -v git);
+python=$(command -v python);
 
 SSH_COMMAND="${ssh} -o StrictHostKeyChecking=accept-new";
 SCP_COMMAND="${scp} -o StrictHostKeyChecking=accept-new";
@@ -79,10 +80,13 @@ KUBE_PKI=$($YQ -r '.kube-pki' $config_yaml);
 KUBE_DIR=$($YQ -r '.kube-dir' $config_yaml);
 CLUSTER_IP=$($YQ -r '.cluster-ip' $config_yaml)
 CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
+SERVICE_CIDR=$($YQ -r '.service-cidr' $config_yaml);
+CLUSTER_CIDR=$($YQ -r '.cluster-cidr' $config_yaml);
 
 CERT_DIR="${BUILD_DIR}/certs";
 SRC_DIR="${BUILD_DIR}/src";
 GOROOT="${SRC_DIR}/go";
+CALICO_SRC="$SRC_DIR/calico";
 CNI_CONF_DIR="/etc/cni/net.d";
 CNI_BIN_DIR="/opt/cni/bin";
 

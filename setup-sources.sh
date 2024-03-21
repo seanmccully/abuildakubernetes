@@ -117,14 +117,14 @@ function setup_kube_apiserver() {
     domain=${fqdn#*.};
     bind_ip="${peer_ips[$hostname]}";
     cluster_ip=$($YQ -r '.cluster-ip' $config_yaml);
-    service_cidr=$($YQ -r '.service-cidr' $config_yaml);
+
     service_cert="${KUBE_PKI}/sa.pub";
     service_key="${KUBE_PKI}/sa.key";
 
 
     $SED -i "s/CLUSTER_IP/${cluster_ip}/g" $api_env;
     $SED -i "s/IP_ADDR/${bind_ip}/g" $api_env;
-    $SED -i "s~SERVICE_CIDR~${service_cidr}~g" $api_env;
+    $SED -i "s~SERVICE_CIDR~${SERVICE_CIDR}~g" $api_env;
     $SED -i "s~SERVICE_PKI~${service_cert}~g" $api_env;
     $SED -i "s~SERVICE_KEY~${service_key}~g" $api_env;
     $SED -i "s/DOMAIN_NAME/${domain}/g" $api_env;
@@ -151,6 +151,25 @@ function setup_kube_apiserver() {
 
 }
 
+function prepare_calico_manifests() {
+
+    tigera_values="${CALICO_SRC}/charts/tigera-operator/values.yaml"
+    cluster="";
+    set_peer_ips;
+    for host in ${!peer_ips[@]}; do
+        cluster+="https://${peer_ips[$host]}:2379,";
+    done
+    $YQ -ir ".peer-transport-security.cert-file=\"$ETCD_PKI/peer.crt\"" $etcd_yml;
+    $YQ -ir ".peer-transport-security.key-file=\"$ETCD_PKI/peer.key\"" $etcd_yml;
+    $YQ -ir ".peer-transport-security.trusted-ca-file=\"$ETCD_PKI/ca.crt\"" $etcd_yml;
+
+    cluster="${cluster::-1}";
+    $YQ -ir ".etcd.endpoints=\"${cluster}\"" $calico_values;
+    $YQ -ir ".etcd.tls.crt=\"${ETCD_PKI}/peer.crt\"" $calico_values;
+    $YQ -ir ".etcd.tls.ca=\"${ETCD_PKI}/ca.crt\"" $calico_values;
+    $YQ -ir ".etcd.tls.key=\"${ETCD_PKI}/peer.key\"" $calico_values;
+}
+
 function setup_kube_controller_manager() {
 
     info "starting setup_kube_controller_manager"
@@ -158,8 +177,6 @@ function setup_kube_controller_manager() {
     cm_env="${KUBE_DIR}/kube-controller-manager.env";
 
     cluster_ip=$($YQ -r '.cluster-ip' $config_yaml);
-    service_cidr=$($YQ -r '.service-cidr' $config_yaml);
-    cluster_cidr=$($YQ -r '.cluster-cidr' $config_yaml);
     service_cert="${KUBE_PKI}/sa.pub";
     service_key="${KUBE_PKI}/sa.key";
 
@@ -169,8 +186,8 @@ function setup_kube_controller_manager() {
     $SED -i "s~PROXY_CA~${KUBE_PKI}/front-proxy-ca.crt~g" $cm_env;
     $SED -i "s~SERVICE_KEY~${service_key}~g" $cm_env;
     $SED -i "s~CA_KEY~${KUBE_PKI}/ca.key~g" $cm_env;
-    $SED -i "s~CLUSTER_CIDR~${cluster_cidr}~g" $cm_env;
-    $SED -i "s~SERVICE_CIDR~${cluster_cidr}~g" $cm_env;
+    $SED -i "s~CLUSTER_CIDR~${CLUSTER_CIDR}~g" $cm_env;
+    $SED -i "s~SERVICE_CIDR~${CLUSTER_CIDR}~g" $cm_env;
 
     info "finished setup_kube_controller_manager"
 
@@ -198,15 +215,15 @@ function setup_kubelet() {
     k_env="${KUBE_DIR}/kubelet.env";
     kubelet_dir=$($YQ -r '.kubelet-dir' $config_yaml);
     cluster_domain=$($YQ -r '.cluster-domain' $config_yaml);
-    service_cidr=$($YQ -r '.service-cidr' $config_yaml);
     kubelet_config="${kubelet_dir}/kubelet-config.yaml";
     hostname=$(hostname);
     ip_addr="${peer_ips[$hostname]}";
-    service_cidr="${service_cidr%/*}";
-    dns_ip="${service_cidr%.*}.10";
+    svc_cidr="${SERVICE_CIDR%/*}";
+    dns_ip="${svc_cidr%.*}.10";
 
     mkdir -p $kubelet_dir;
-    #$SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
+    $SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
+    $SED -i "s/KUBELET_DIR/${kubelet_dir}/g" $kubelet_config;
     $SED -i "s/CLUSTER_DOMAIN/${cluster_domain}/g" $kubelet_config;
     $SED -i "s/CLUSTER_DNS/${dns_ip}/g" $kubelet_config;
 
@@ -216,6 +233,8 @@ function setup_kubelet() {
     $SED -i "s~KUBECONFIG~${kubelet_dir}/kubeconfig~g" $k_env;
     $SED -i "s~CONTAINERD_SOCK~${containerd_sock}~g" $k_env;
     $SED -i "s~KUBELET_CONFIG~${kubelet_config}~g" $k_env;
+    $SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
+    $SED -i "s~CA_CERT~${KUBE_PKI}/ca.crt~g" $k_env;
     info "finished setup_kubelet"
 
 }
@@ -224,20 +243,17 @@ function setup_kube_proxy() {
 
     info "starting setup_kube_proxy"
     kp_env="${KUBE_DIR}/kube-proxy.env";
-    cluster_cidr=$($YQ -r '.cluster-cidr' $config_yaml);
     kube_proxy_dir=$($YQ -r '.kube-proxy-dir' $config_yaml);
 
     kube_proxy_config="${kube_proxy_dir}/kube-proxy-config.yaml";
     kube_proxy_kubeconfig="${kube_proxy_dir}/kubeconfig";
 
     mkdir -p $kube_proxy_dir;
-    #cp services/kube-proxy.env "${KUBE_DIR}/kube-proxy.env";
-    #cp conf/kube-proxy-config.yaml "${kube_proxy_dir}/kube-proxy-config.yaml";
 
     $SED -i "s~CLUSTER_ADDR~https://${cluster_ip}:6443~g" $kp_env;
     $SED -i "s~PROXY_CONFIG~${kube_proxy_config}~g" $kp_env;
 
-    $YQ -ir ".clusterCIDR=\"${cluster_cidr}\"" $kube_proxy_config;
+    $YQ -ir ".clusterCIDR=\"${CLUSTER_CIDR}\"" $kube_proxy_config;
     $YQ -ir ".clientConnection.kubeconfig=\"${kube_proxy_kubeconfig}\"" $kube_proxy_config;
     $YQ -ir ".cgroupDriver=\"systemd\"" $kube_proxy_config;
 
@@ -259,4 +275,5 @@ function main() {
     info "finished main";
 }
 
-main;
+#main;
+prepare_calico_manifests;

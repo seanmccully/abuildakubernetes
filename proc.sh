@@ -144,8 +144,45 @@ function install_certs() {
 
 function provision_calico() {
     info "started provision_calico";
-    echo "name: calico-typha";
-    echo "name: calico-node";
+
+    cluster_cidr=$($YQ -r '.cluster-cidr' $config_yaml);
+    pool_yaml="/tmp/ippool.yaml"
+
+    calico_manifests;
+    exec_c "kubectl apply -f ${CALICO_SRC}/manifests/crds.yaml";
+    export KUBECONFIG="/root/.kube/config";
+    export DATASTORE_TYPE=kubernetes;
+
+    cat > $pool_yaml <<EOF
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: pool1
+spec:
+  cidr: ${cluster_cidr}
+  ipipMode: Never
+  natOutgoing: true
+  disabled: false
+  nodeSelector: all()
+EOF
+
+   calicoctl create -f $pool_yaml
+
+}
+
+
+function calico_manifests() {
+    info "started calico_manifests";
+
+    export GOPATH="${GOROOT}";
+    export PATH="${GOPATH}/bin:${PATH}";
+    exec_c "go install golang.org/x/tools/cmd/goimports@latest";
+
+    # TODO: update values.yaml
+    exec_c "pushd ${CALICO_SRC}/calicoctl/calicoctl/commands/crds && go generate && popd"
+    exec_c "pushd ${CALICO_SRC} && find . -iname \"*.go\" ! -wholename \"./vendor/*\" | xargs goimports -w -local github.com/projectcalico/calico/ && popd"
+    exec_c "pushd ${CALICO_SRC} && make gen-manifests && popd"
+
 }
 
 function kubeconfig() {
@@ -223,7 +260,7 @@ function kube_proxy() {
     kube_proxy_crt="${CERT_DIR}/kubernetes/certs/kube-proxy.cert.pem";
     kube_proxy_key="${CERT_DIR}/kubernetes/private/kube-proxy.key.pem";
     kube_proxy_config="${kube_proxy_dir}/kubeconfig";
-    exec_c "kubeconfig $kube_proxy_config system:kube-proxy $PKI_DIR/ca.crt $kube_proxy_crt $kube_proxy_key"
+    exec_c "kubeconfig $kube_proxy_config system:node-proxier $PKI_DIR/ca.crt $kube_proxy_crt $kube_proxy_key"
     for host in $(yq -r ".hosts | .[]" $config_yaml); do
         exec_c "mkdir -p ${kube_proxy_dir}" $host;
         exec_c "$SCP_COMMAND $kube_proxy_config  $host:${kube_proxy_config}";
@@ -241,6 +278,8 @@ function create_kubelet_kubeconfig() {
     kubelet_crt="${CERT_DIR}/kubernetes/certs/${hostname}.cert.pem";
     kubelet_key="${CERT_DIR}/kubernetes/private/${hostname}.key.pem";
     kubelet_config="${kubelet_dir}/kubeconfig";
+    exec_c "cp ${kubelet_crt} ${kubelet_dir}/kubelet.crt"
+    exec_c "cp ${kubelet_key} ${kubelet_dir}/kubelet.key"
     kubeconfig $kubelet_config "system:node:${hostname}" $PKI_DIR/ca.crt $kubelet_crt $kubelet_key
 
         for host in $(yq -r ".hosts | .[]" $config_yaml); do
@@ -251,6 +290,8 @@ function create_kubelet_kubeconfig() {
             kubeconfig $kubelet_config "system:node:${host}" $PKI_DIR/ca.crt $kubelet_crt $kubelet_key
             exec_c "mkdir -p ${kubelet_dir}" $host;
             exec_c "${SCP_COMMAND} ${kubelet_config}  ${host}:${kubelet_dir}/kubeconfig";
+            exec_c "${SCP_COMMAND} ${kubelet_crt}  ${host}:${kubelet_dir}/kubelet.crt";
+            exec_c "${SCP_COMMAND} ${kubelet_key}  ${host}:${kubelet_dir}/kubelet.key";
             exec_c "rm ${kubelet_config}";
         done
     info "finished create_kubelet_kubeconfig";
@@ -392,7 +433,7 @@ function vrrp_configure() {
     exec_c "sed -i \"s/ROUTER_ID/${router_id}/g\" $k_conf";
     exec_c "sed -i \"s/PRIO/${prio}/g\" $k_conf";
     exec_c "sed -i \"s/AUTH_PASS/${auth_pass}/g\" $k_conf";
-    exec_c "sed -i \"s/IP_ADDR/$CLUSTER_IP/g\" $k_conf";
+    exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP/24~g\" $k_conf";
 
     virtual_server_doc="""
         virtual_server IP_ADDR PORT {
@@ -604,4 +645,5 @@ while [ : ]; do
         ;;
   esac
 done
+
 main;
