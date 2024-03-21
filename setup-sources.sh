@@ -275,4 +275,5 @@ function main() {
     info "finished main";
 }
 
-main;
+#main;
+prepare_calico_manifests;

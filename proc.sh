@@ -438,7 +438,6 @@ function vrrp_configure() {
      ha_proxy_configure $host_ip $prio;
      info "vrrp_configure ${intf}";
 
-
      exec_c "sed -i \"s/INTERFACE/${intf}/g\" $k_conf";
      exec_c "sed -i \"s/ROUTER_ID/${router_id}/g\" $k_conf";
      exec_c "sed -i \"s/AUTH_PASS/${auth_pass}/g\" $k_conf";
