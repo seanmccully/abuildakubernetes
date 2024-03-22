@@ -31,6 +31,8 @@
 _path=$(dirname "$0")
 MESSAGE_HEADER="cert-manager";
 source "${_path}/common.sh";
+dns_alts="";
+ip_alts="";
 
 function create_ca() {
     info "starting create_ca";
@@ -156,48 +158,43 @@ function certHandler() {
     writeConfig $component $intermediate $cert_type $prefix;
 }
 
-function writeHosts() {
+function configureAlts() {
 
     icnf=$1;
     node_name=${2:-false};
-    info "writeHosts $icnf $node_name";
+    info "starting configureAlts $icnf $node_name";
     if [ $node_name != false ]; then
-        c=2;
 
-        echo "IP.${c} = ${CLUSTER_IP}" >> $icnf;
-        c=$[$c + 1];
         service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
-        echo "IP.${c} = ${service_net_ip}" >> $icnf;
-        c=$[$c + 1];
+        ip_alts ="${ip_alts}, IP:127.0.0.1";
+        ip_alts ="${ip_alts}, IP:${CLUSTER_IP}";
+        ip_alts ="${ip_alts}, IP:${service_net_ip}";
+
         for ip in $($YQ -r ".${node_name} | .[]" $hosts_yaml); do
-            echo "IP.${c} = ${ip}" >> $icnf;
-            c=$[$c + 1];
+            if [[ "${ip}" != "127.0.0.1" ]]; then
+                ip_alts="${ip_alts}, IP:${ip}";
+            fi
         done
-        c=2;
-        echo "DNS.${c} = ${node_name}" >> $icnf;
+        dns_alts="${dns_alts}, DNS:localhost";
+        dns_alts="${dns_alts}, DNS:${node_name}";
         for domains in $($YQ -r '.san.domains |  .[] ' $CERTS_YAML); do
-            c=$[$c + 1];
-            echo "DNS.${c} = ${node_name}${domains}" >> $icnf;
+            dns_alts="${dns_alts}, DNS:${node_name}${domains}";
         done
     else
-        c=2;
         echo "IP.${c} = ${CLUSTER_IP}" >> $icnf;
-        c=$[$c + 1];
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
             for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
-                echo "IP.${c} = ${ip}" >> $icnf;
-                c=$[$c + 1];
+                ip_alts="${ip_alts}, IP:${ip}";
             done
         done
-        c=2;
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
             echo "DNS.${c} = ${host}" >> $icnf;
             for domains in $($YQ -r ".san.domains |  .[] " $CERTS_YAML); do
-                c=$[$c + 1];
-                echo "DNS.${c} = ${host}${domains}" >> $icnf;
+                dns_alts="${dns_alts}, DNS:${node_name}${domains}";
             done
         done
     fi
+    info "finished configureAlts $icnf $node_name ${ip_alts} ${dns_alts}";
 }
 
 function writeConfig() {
@@ -211,19 +208,7 @@ function writeConfig() {
     icnf="$intermediate/openssl.conf"
     cp $intermediate/openssl.cnf $icnf;
 
-    if [ $cert_type = "server_cert" ]; then
-    cat <<- EOF >> "${icnf}"
-[ req_ext ]
-subjectAltName = @alt_names
-
-[ alt_names ]
-DNS.1 = localhost
-IP.1 = 127.0.0.1
-EOF
-
-        exec_c "sed -i \"s/#subjectAltName/subjectAltName/g\" ${icnf}";
-        exec_c "sed -i \"s/#req_extensions/req_extensions/g\" ${icnf}";
-    else
+    if [ $cert_type != "server_cert" ]; then
         orgName="$intermediate";
     fi
 
@@ -284,6 +269,7 @@ function mkCert() {
     exec_c "openssl req -config ${icnf} \
         -key ${key_file} \
         -subj "${subj}" \
+        -addext "subjectAltName=${dns_alts},${ip_alts}" \
         -new -sha256 -out ${csr_file}";
 
     exec_c "openssl ca -config ${icnf} \

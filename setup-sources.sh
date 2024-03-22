@@ -223,7 +223,7 @@ function setup_kubelet() {
 
     mkdir -p $kubelet_dir;
     $SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
-    $SED -i "s/KUBELET_DIR/${kubelet_dir}/g" $kubelet_config;
+    $SED -i "s~KUBELET_DIR~${kubelet_dir}~g" $kubelet_config;
     $SED -i "s/CLUSTER_DOMAIN/${cluster_domain}/g" $kubelet_config;
     $SED -i "s/CLUSTER_DNS/${dns_ip}/g" $kubelet_config;
 
@@ -276,4 +276,4 @@ function main() {
 }
 
 #main;
-prepare_calico_manifests;
+setup_kubelet;

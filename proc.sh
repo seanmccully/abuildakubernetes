@@ -404,62 +404,47 @@ function exec_script() {
     info "finished exec_script ${_script} ${_remote}";
 }
 
+function ha_proxy_configure() {
+
+    ip_addr=${1};
+    _c=${2:-1};
+    hap_conf="/etc/haproxy/haproxy.cfg";
+    server_str="server k8s-api-${_c} ${ip_addr}:6443 check"
+    exec_c "echo \"${server_str}\" >> ${hap_conf}";
+}
 
 function vrrp_configure() {
 
-    [ -z ${peer_ips} ] && set_peer_ips;
-    host=${1:-"local"};
-    prio=${2:-"30"};
-    k_conf=${3};
-    info "started vrrp_configure $host $prio";
+     [ -z ${peer_ips} ] && set_peer_ips;
+     host=${1:-"local"};
+     prio=${2:-"30"};
+     k_conf=${3};
+     auth_pass=${4};
+     router_id=${5};
+     info "started vrrp_configure $host $prio";
 
-    if [[ $host == "local" ]]; then
-        hostname=$local_hostname;
-    else
-        hostname=$host;
-    fi
-    info "started vrrp_configure hostname ${hostname}";
+     local_hostname=$(hostname);
+     intf="";
+     if [[ $host == "local" ]]; then
+         hostname=$local_hostname;
+         host_ip="${peer_ips[${hostname}]}";
+         intf=$(ip -br -4 a sh | grep ${host_ip} | awk '{print $1}');
+     else
+         hostname=$host;
+         host_ip="${peer_ips[${hostname}]}";
+         intf=$($SSH_COMMAND $host "ip -br -4 a sh | grep ${host_ip} | awk '{print \$1}'");
+     fi
+     intf="${intf%%@*}";
+     ha_proxy_configure $host_ip $prio;
+     info "vrrp_configure ${intf}";
 
-    local_hostname=$(hostname)
-    host_ip="${peer_ips[${hostname}]}";
-    local_ip="${peer_ips[${local_hostname}]}";
-    info "started vrrp_configure host_ip ${host_ip}";
-    intf=$(ip -br -4 a sh | grep $local_ip | awk '{print $1}');
-    intf="${intf%%@*}";
-    router_id="$((1 + $RANDOM % 10))";
-    auth_pass=$(openssl rand -hex 24);
-    prio=25;
-    exec_c "sed -i \"s/INTERFACE/${intf}/g\" $k_conf";
-    exec_c "sed -i \"s/ROUTER_ID/${router_id}/g\" $k_conf";
-    exec_c "sed -i \"s/PRIO/${prio}/g\" $k_conf";
-    exec_c "sed -i \"s/AUTH_PASS/${auth_pass}/g\" $k_conf";
-    exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP/24~g\" $k_conf";
 
-    virtual_server_doc="""
-        virtual_server IP_ADDR PORT {
-        delay_loop 6
-        lvs_method NAT
-        protocol TCP
+     exec_c "sed -i \"s/INTERFACE/${intf}/g\" $k_conf";
+     exec_c "sed -i \"s/ROUTER_ID/${router_id}/g\" $k_conf";
+     exec_c "sed -i \"s/priority .*$/priority ${prio}/g\" ${k_conf}" $host;
+     exec_c "sed -i \"s/AUTH_PASS/${auth_pass}/g\" $k_conf";
+     exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP/24~g\" $k_conf";
 
-""";
-    real_server_doc="""
-    real_server IP_ADDR 6443 {
-        TCP_CHECK {
-            connect_port 6443
-        }
-    }
-""";
-
-    for _p in "6443" "443"; do
-        virtual_server=$virtual_server_doc;
-        virtual_server=${virtual_server/PORT/${_p}};
-        virtual_server=${virtual_server/IP_ADDR/${CLUSTER_IP}};
-        rs_doc=$real_server_doc;
-        rs_doc=${rs_doc/IP_ADDR/$host_ip};
-        virtual_server+="\n${rs_doc}\n";
-        virtual_server+="\n}";
-        printf "${virtual_server}" >> $k_conf;
-    done
 
     info "finished vrrp_configure";
 }
@@ -470,24 +455,34 @@ function keepalived_configure() {
     k_conf="/usr/local/etc/keepalived/keepalived.conf";
     k_conf_dir=$(dirname $k_conf);
     k_conf_s="$CONF_DIR/keepalived.conf";
-    prio="30";
+    prio="25";
+    auth_pass=$(openssl rand -hex 24);
+    router_id="$((1 + $RANDOM % 10))";
+
+    hap_conf="/etc/haproxy/haproxy.cfg";
+    exec_c "cp ./conf/haproxy.cfg ${hap_conf}";
+
+    exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP~g\" $hap_conf";
 
     if [ -f $config_yaml ]; then
         # Copy certs to additional hosts
         for host in $(yq -r ".hosts | .[]" $config_yaml); do
             exec_c "install -m 644 $k_conf_s  $k_conf";
-            vrrp_configure $host $prio $k_conf;
+            vrrp_configure $host $prio $k_conf $auth_pass $router_id;
             exec_c "$SCP_COMMAND  $k_conf $host:$k_conf";
             exec_c "sed -i \"s/MASTER/BACKUP/g\" ${k_conf}" $host;
             prio=$[$prio - "1"];
-            exec_c "sed -i \"s/priority .*/priority ${prio}/g\" ${k_conf}" $host;
         done;
     fi
-    k_conf="/usr/local/etc/keepalived/keepalived.conf";
-    k_conf_dir=$(dirname $k_conf);
-    k_conf_s="$CONF_DIR/keepalived.conf";
-    exec_c "install -m 644 $k_conf_s  $k_conf";
-    vrrp_configure "local" $prio $k_conf;
+
+    prio=$[$prio - "1"];
+    vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
+    if [ -f $config_yaml ]; then
+        # Copy certs to additional hosts
+        for host in $(yq -r ".hosts | .[]" $config_yaml); do
+            exec_c "$SCP_COMMAND  ${hap_conf} $host:${hap_conf}";
+        done
+    fi
 }
 
 function kube_configure() {
@@ -646,4 +641,4 @@ while [ : ]; do
   esac
 done
 
-main;
+main
