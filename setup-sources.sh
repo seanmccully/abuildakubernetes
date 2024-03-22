@@ -276,4 +276,4 @@ function main() {
 }
 
 #main;
-prepare_calico_manifests;
+setup_kubelet;

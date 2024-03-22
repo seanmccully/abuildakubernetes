@@ -461,6 +461,7 @@ function keepalived_configure() {
     exec_c "cp ./conf/haproxy.cfg ${hap_conf}";
 
     exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP~g\" $hap_conf";
+<<<<<<< HEAD
 
     vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
     exec_c "sed -i \"s/priority .*$/priority ${prio}/g\" ${k_conf}";
@@ -475,13 +476,34 @@ function keepalived_configure() {
             backup_prio=$[$backup_prio - "1"];
         done;
     fi
+=======
+>>>>>>> 79c5eca (HAProxy)
 
+    if [ -f $config_yaml ]; then
+        # Copy certs to additional hosts
+        for host in $(yq -r ".hosts | .[]" $config_yaml); do
+<<<<<<< HEAD
+            exec_c "$SCP_COMMAND  ${hap_conf} $host:${hap_conf}";
+        done
+    fi
+=======
+            exec_c "install -m 644 $k_conf_s  $k_conf";
+            vrrp_configure $host $prio $k_conf $auth_pass $router_id;
+            exec_c "$SCP_COMMAND  $k_conf $host:$k_conf";
+            exec_c "sed -i \"s/MASTER/BACKUP/g\" ${k_conf}" $host;
+            prio=$[$prio - "1"];
+        done;
+    fi
+
+    prio=$[$prio - "1"];
+    vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
     if [ -f $config_yaml ]; then
         # Copy certs to additional hosts
         for host in $(yq -r ".hosts | .[]" $config_yaml); do
             exec_c "$SCP_COMMAND  ${hap_conf} $host:${hap_conf}";
         done
     fi
+>>>>>>> 79c5eca (HAProxy)
 }
 
 function kube_configure() {
@@ -640,4 +662,4 @@ while [ : ]; do
   esac
 done
 
-main;
+main

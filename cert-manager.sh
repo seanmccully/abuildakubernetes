@@ -159,7 +159,6 @@ function certHandler() {
 }
 
 function configureAlts() {
-
     node_name=${1:-false};
 
     info "starting configureAlts $node_name";
@@ -278,12 +277,20 @@ function mkCert() {
 
     exec_c "openssl genrsa -out $key_file 4096";
     exec_c "chmod 400 $key_file";
+<<<<<<< HEAD
     openssl_cmd="${openssl} req -config ${icnf} -key ${key_file}";
     openssl_cmd="${openssl_cmd} -subj ${subj}";
     if [ ! -z "${alt_names}" ]; then
         openssl_cmd="${openssl_cmd} -addext ${alt_names}";
     fi
     openssl_cmd="${openssl_cmd}  -new -sha256 -out ${csr_file}";
+=======
+    exec_c "openssl req -config ${icnf} \
+        -key ${key_file} \
+        -subj "${subj}" \
+        -addext "subjectAltName=${dns_alts},${ip_alts}" \
+        -new -sha256 -out ${csr_file}";
+>>>>>>> 79c5eca (HAProxy)
 
     info "${openssl_cmd}";
     exec_c "${openssl_cmd}";
