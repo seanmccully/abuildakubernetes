@@ -441,7 +441,6 @@ function vrrp_configure() {
 
      exec_c "sed -i \"s/INTERFACE/${intf}/g\" $k_conf";
      exec_c "sed -i \"s/ROUTER_ID/${router_id}/g\" $k_conf";
-     exec_c "sed -i \"s/priority .*$/priority ${prio}/g\" ${k_conf}" $host;
      exec_c "sed -i \"s/AUTH_PASS/${auth_pass}/g\" $k_conf";
      exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP/24~g\" $k_conf";
 
@@ -464,19 +463,20 @@ function keepalived_configure() {
 
     exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP~g\" $hap_conf";
 
+    vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
+    exec_c "sed -i \"s/priority .*$/priority ${prio}/g\" ${k_conf}";
+
+    backup_prio=$[$prio - "5"];
     if [ -f $config_yaml ]; then
         # Copy certs to additional hosts
         for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "install -m 644 $k_conf_s  $k_conf";
-            vrrp_configure $host $prio $k_conf $auth_pass $router_id;
             exec_c "$SCP_COMMAND  $k_conf $host:$k_conf";
             exec_c "sed -i \"s/MASTER/BACKUP/g\" ${k_conf}" $host;
-            prio=$[$prio - "1"];
+            exec_c "sed -i \"s/priority .*$/priority ${backup_prio}/g\" ${k_conf}" $host;
+            backup_prio=$[$backup_prio - "1"];
         done;
     fi
 
-    prio=$[$prio - "1"];
-    vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
     if [ -f $config_yaml ]; then
         # Copy certs to additional hosts
         for host in $(yq -r ".hosts | .[]" $config_yaml); do
@@ -641,4 +641,4 @@ while [ : ]; do
   esac
 done
 
-main
+main;

@@ -233,7 +233,7 @@ function setup_kubelet() {
     $SED -i "s~KUBECONFIG~${kubelet_dir}/kubeconfig~g" $k_env;
     $SED -i "s~CONTAINERD_SOCK~${containerd_sock}~g" $k_env;
     $SED -i "s~KUBELET_CONFIG~${kubelet_config}~g" $k_env;
-    $SED -i "s/IP_ADDR/${ip_addr}/g" $kubelet_config;
+    $SED -i "s/IP_ADDR/${ip_addr}/g" $k_env;
     $SED -i "s~CA_CERT~${KUBE_PKI}/ca.crt~g" $k_env;
     info "finished setup_kubelet"
 
@@ -275,5 +275,4 @@ function main() {
     info "finished main";
 }
 
-#main;
-setup_kubelet;
+main;
