@@ -168,18 +168,21 @@ function configureAlts() {
     ip_alts="${ip_alts},IP:${service_net_ip}";
     dns_alts="DNS:localhost";
 
+<<<<<<< HEAD
     if [ $node_name != false ]; then
-        for ip in $($YQ -r ".${node_name} | .[]" $hosts_yaml); do
-            if [[ "${ip}" != "127.0.0.1" ]]; then
-                ip_alts="${ip_alts},IP:${ip}";
-            fi
-        done
+=======
+    node_name=${1:-false};
 
-        dns_alts="${dns_alts},DNS:${node_name}";
-        for domains in $($YQ -r '.san.domains |  .[] ' $CERTS_YAML); do
-            dns_alts="${dns_alts},DNS:${node_name}${domains}";
-        done
-    else
+    info "starting configureAlts $node_name";
+    service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
+    ip_alts="IP:127.0.0.1";
+    ip_alts="${ip_alts},IP:${CLUSTER_IP}";
+    ip_alts="${ip_alts},IP:${service_net_ip}";
+    dns_alts="DNS:localhost";
+
+    if [ $node_name != false ]; then
+
+
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
             for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
                 if [[ "${ip}" != "127.0.0.1" ]]; then
@@ -278,12 +281,16 @@ function mkCert() {
     exec_c "openssl genrsa -out $key_file 4096";
     exec_c "chmod 400 $key_file";
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 6d6ba9e (SAN certs CLI)
     openssl_cmd="${openssl} req -config ${icnf} -key ${key_file}";
     openssl_cmd="${openssl_cmd} -subj ${subj}";
     if [ ! -z "${alt_names}" ]; then
         openssl_cmd="${openssl_cmd} -addext ${alt_names}";
     fi
     openssl_cmd="${openssl_cmd}  -new -sha256 -out ${csr_file}";
+<<<<<<< HEAD
 =======
     exec_c "openssl req -config ${icnf} \
         -key ${key_file} \
@@ -291,6 +298,8 @@ function mkCert() {
         -addext "subjectAltName=${dns_alts},${ip_alts}" \
         -new -sha256 -out ${csr_file}";
 >>>>>>> 79c5eca (HAProxy)
+=======
+>>>>>>> 6d6ba9e (SAN certs CLI)
 
     info "${openssl_cmd}";
     exec_c "${openssl_cmd}";
