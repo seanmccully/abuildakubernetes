@@ -275,5 +275,4 @@ function main() {
     info "finished main";
 }
 
-#main;
-setup_kubelet;
+main;
