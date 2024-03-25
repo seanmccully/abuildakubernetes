@@ -160,41 +160,46 @@ function certHandler() {
 
 function configureAlts() {
 
-    icnf=$1;
-    node_name=${2:-false};
-    info "starting configureAlts $icnf $node_name";
+    node_name=${1:-false};
+
+    info "starting configureAlts $node_name";
+    service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
+    ip_alts="IP:127.0.0.1";
+    ip_alts="${ip_alts},IP:${CLUSTER_IP}";
+    ip_alts="${ip_alts},IP:${service_net_ip}";
+    dns_alts="DNS:localhost";
+
     if [ $node_name != false ]; then
 
-        service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
-        ip_alts ="${ip_alts}, IP:127.0.0.1";
-        ip_alts ="${ip_alts}, IP:${CLUSTER_IP}";
-        ip_alts ="${ip_alts}, IP:${service_net_ip}";
 
         for ip in $($YQ -r ".${node_name} | .[]" $hosts_yaml); do
             if [[ "${ip}" != "127.0.0.1" ]]; then
-                ip_alts="${ip_alts}, IP:${ip}";
+                ip_alts="${ip_alts},IP:${ip}";
             fi
         done
-        dns_alts="${dns_alts}, DNS:localhost";
-        dns_alts="${dns_alts}, DNS:${node_name}";
+
+        dns_alts="${dns_alts},DNS:${node_name}";
         for domains in $($YQ -r '.san.domains |  .[] ' $CERTS_YAML); do
-            dns_alts="${dns_alts}, DNS:${node_name}${domains}";
+            dns_alts="${dns_alts},DNS:${node_name}${domains}";
         done
     else
-        echo "IP.${c} = ${CLUSTER_IP}" >> $icnf;
+
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
             for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
-                ip_alts="${ip_alts}, IP:${ip}";
+                if [[ "${ip}" != "127.0.0.1" ]]; then
+                    ip_alts="${ip_alts},IP:${ip}";
+                fi
             done
         done
+
         for host in $($YQ -r "keys | .[]" $hosts_yaml); do
-            echo "DNS.${c} = ${host}" >> $icnf;
+            dns_alts="${dns_alts},DNS:${host}";
             for domains in $($YQ -r ".san.domains |  .[] " $CERTS_YAML); do
-                dns_alts="${dns_alts}, DNS:${node_name}${domains}";
+                dns_alts="${dns_alts},DNS:${host}${domains}";
             done
         done
     fi
-    info "finished configureAlts $icnf $node_name ${ip_alts} ${dns_alts}";
+    info "finished configureAlts $node_name ${ip_alts} ${dns_alts}";
 }
 
 function writeConfig() {
@@ -212,21 +217,22 @@ function writeConfig() {
         orgName="$intermediate";
     fi
 
+    ip_alts="";
+    dns_alts="";
     if [[ $prefix == "system:masters" ]]; then
-        writeHosts $icnf $component;
+        configureAlts $component
         orgName="${prefix}";
         cn_prefix="";
     elif [[ $prefix == "system:nodes" ]]; then
-        writeHosts $icnf $component;
+        configureAlts $component
         orgName="${prefix}";
         cn_prefix="${prefix%*s}:";
     elif [[ $prefix == "system:node-proxier" ]]; then
-        writeHosts $icnf $component;
+        configureAlts $component
         orgName="${prefix}";
-        info "orgName ${orgName}";
         cn_prefix="${prefix%node-proxier}";
     else
-        writeHosts $icnf;
+        configureAlts
         if [ ! -z "$prefix" ]; then
             orgName="${prefix}";
             cn_prefix="${prefix%:*}:";
@@ -263,21 +269,34 @@ function mkCert() {
         warning "OpenSSL mkCert ${cert_out} already exists";
         return 1;
     fi
+    alt_names="";
+    if [ ! -z "${dns_alts}" ]; then
+        alt_names="subjectAltName=${dns_alts}";
+        if [ ! -z "${ip_alts}" ]; then
+            alt_names="${alt_names},${ip_alts}";
+        fi
+    elif [ ! -z "${ip_alts}" ]; then
+        alt_names="subjectAltName=${ip_alts}";
+    fi
 
     exec_c "openssl genrsa -out $key_file 4096";
     exec_c "chmod 400 $key_file";
-    exec_c "openssl req -config ${icnf} \
-        -key ${key_file} \
-        -subj "${subj}" \
-        -addext "subjectAltName=${dns_alts},${ip_alts}" \
-        -new -sha256 -out ${csr_file}";
+    openssl_cmd="${openssl} req -config ${icnf} -key ${key_file}";
+    openssl_cmd="${openssl_cmd} -subj ${subj}";
+    if [ ! -z "${alt_names}" ]; then
+        openssl_cmd="${openssl_cmd} -addext ${alt_names}";
+    fi
+    openssl_cmd="${openssl_cmd}  -new -sha256 -out ${csr_file}";
 
-    exec_c "openssl ca -config ${icnf} \
-      -extensions ${cert_type} -days 1024 -notext -md sha256 \
-      -passin file:${PASS_FILE} \
-      -in ${csr_file} \
-      -batch \
-      -out ${cert_out}";
+    info "${openssl_cmd}";
+    exec_c "${openssl_cmd}";
+
+    openssl_cmd="${openssl} ca -config ${icnf} -extensions ${cert_type}";
+    openssl_cmd="${openssl_cmd} -days 1024 -notext -md sha256 -passin file:${PASS_FILE}";
+    openssl_cmd="${openssl_cmd} -in ${csr_file} -batch -out ${cert_out}";
+
+    info "${openssl_cmd}";
+    exec_c "${openssl_cmd}";
     exec_c "chmod 444 ${cert_out}";
 }
 

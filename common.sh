@@ -68,6 +68,7 @@ ssh=$(command -v ssh);
 scp=$(command -v scp);
 git=$(command -v git);
 python=$(command -v python);
+openssl=$(command -v openssl);
 
 SSH_COMMAND="${ssh} -o StrictHostKeyChecking=accept-new";
 SCP_COMMAND="${scp} -o StrictHostKeyChecking=accept-new";

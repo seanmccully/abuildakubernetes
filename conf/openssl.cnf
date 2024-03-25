@@ -11,6 +11,7 @@ new_certs_dir    = $dir/newcerts
 database         = $dir/index.txt
 serial           = $dir/serial
 RANDFILE         = $dir/private/.rand
+copy_extensions   = copyall
 
 # The root key and root certificate.
 private_key      = $dir/private/ca.key.pem
@@ -114,7 +115,6 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer:always
 keyUsage = critical, digitalSignature, keyEncipherment
 extendedKeyUsage = serverAuth, clientAuth
-subjectAltName=@alt_names
 
 [ crl_ext ]
 # Extension for CRLs (`man x509v3_config`).
@@ -127,15 +127,4 @@ subjectKeyIdentifier = hash
 authorityKeyIdentifier = keyid,issuer
 keyUsage = critical, digitalSignature
 extendedKeyUsage = critical, OCSPSigning
-
-[ req_ext ]
-subjectAltName = @alt_names
-
-[ alt_names ]
-DNS.1 = voron
-DNS.3 = voron.local
-DNS.2 = voron.local.nunet.net
-DNS.4 = localhost
-IP.1 = 192.168.1.11
-IP.2 = 127.0.0.1
 
