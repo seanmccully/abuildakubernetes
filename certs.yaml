@@ -15,6 +15,7 @@ certs:
     etcd:
     - kube-etcd-healthcheck-client
     - kube-apiserver-etcd-client
+    - calico-node
     kubernetes:
     - service-accounts
     - kubelet-client
@@ -24,7 +25,6 @@ certs:
     - kubernetes-super-admin;system:masters
     - admin;system:masters
     - kube-proxy;system:node-proxier
-    - calico-node
     kubernetes-front-proxy:
     - front-proxy-client
   server:
