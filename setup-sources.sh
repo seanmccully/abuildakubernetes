@@ -140,12 +140,8 @@ function setup_kube_apiserver() {
     $SED -i "s~ETCD_CERT~${KUBE_PKI}/apiserver-etcd-client.crt~g" $api_env;
     $SED -i "s~ETCD_KEY~${KUBE_PKI}/apiserver-etcd-client.key~g" $api_env;
 
-    cluster="";
-    set_peer_ips;
-    for host in ${!peer_ips[@]}; do
-        cluster+="https://${peer_ips[$host]}:2379,";
-    done
-    cluster="${cluster::-1}";
+    cluster=etcd_cluster_ips;
+
     $SED -i "s~ETCD_SERVERS~${cluster}~g" $api_env;
     info "finished setup_kube_apiserver"
 

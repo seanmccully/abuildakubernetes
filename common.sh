@@ -274,6 +274,15 @@ function set_peer_ips() {
     info "finished set_peer_ips"
 }
 
+function etcd_cluster_ips() {
+    cluster="";
+    set_peer_ips;
+    for host in ${!peer_ips[@]}; do
+        cluster+="https://${peer_ips[$host]}:2379,";
+    done
+    cluster="${cluster::-1}";
+}
+
 checkBin $YQ
 checkBin $SED
 checkBin $ssh

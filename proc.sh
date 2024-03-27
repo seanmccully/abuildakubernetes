@@ -174,15 +174,27 @@ EOF
 function calico_manifests() {
     info "started calico_manifests";
 
+    chart_values="${CALICO_SRC}/charts/calico/values.yaml";
     export GOPATH="${GOROOT}";
     export PATH="${GOPATH}/bin:${PATH}";
     exec_c "go install golang.org/x/tools/cmd/goimports@latest";
 
-    # TODO: update values.yaml
+    intf=$(ip -br -4 a sh | grep ${host_ip} | awk '{print $1}');
+    mtu=$(exec_c "cat /sys/class/net/${intf}/mtu");
+    cluster=etcd_cluster_ips;
+    etcd_cert=$(exec_c "cat ${ETCD_PKI}/certs/calico-node.cert.pem");
+    etcd_key=$(exec_c "cat ${ETCD_PKI}/private/calico-node.key.pem");
+    etcd_ca=$(exec_c "cat ${ETCD_PKI}/certs/etcd.cert.pem");
+
+    $YQ -ir ".mtu=\"${mtu}\"" $chart_values;
+    $YQ -ir ".etcd.endpoints=\"${cluster}\"" $chart_values;
+    $YQ -ir ".etcd.tls.crt=\"${etcd_cert}\"" $chart_values;
+    $YQ -ir ".etcd.tls.key=\"${etcd_key}\"" $chart_values;
+    $YQ -ir ".etcd.tls.ca=\"${etcd_ca}\"" $chart_values;
+
     exec_c "pushd ${CALICO_SRC}/calicoctl/calicoctl/commands/crds && go generate && popd"
     exec_c "pushd ${CALICO_SRC} && find . -iname \"*.go\" ! -wholename \"./vendor/*\" | xargs goimports -w -local github.com/projectcalico/calico/ && popd"
     exec_c "pushd ${CALICO_SRC} && make gen-manifests && popd"
-
 }
 
 function kubeconfig() {
