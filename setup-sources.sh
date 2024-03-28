@@ -36,16 +36,19 @@ function setup_start_containerd() {
 
     ctd_config="/etc/containerd/config.toml";
 
-    info "setup_start_containerd  setup containerd config.toml"
-    /usr/local/bin/containerd config default > $ctd_config;
-    sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" $ctd_config;
-    sed -i "s/systemd_cgroup = false/systemd_cgroup = true/" $ctd_config;
-    sed -i "s~BinaryName = .*$~BinaryName = \"/usr/local/bin/runc\"~g" $ctd_config;
-    sed -i "/plugins\.\"io\.containerd\.grpc\.v1\.cri\"\.registry/{n;s/config_path = .*$/config_path = \"\/etc\/containerd\/certs.d\"/;}" $ctd_config;
-    systemctl=$(which systemctl);
-    $systemctl daemon-reload;
-    $systemctl start containerd;
+    exec_c "/usr/local/bin/containerd config default > ${ctd_config}";
 
+    exec_c "sed -i \"s/version = 3/version = 2/\" ${ctd_config}";
+    cat >> $ctd_config <<- EOF
+  [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc]
+    [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]
+            systemdCgroup = true
+            BinaryName = '/usr/local/bin/runc'
+EOF
+
+    exec_c "${SYSTEMCTL} daemon-reload";
+    exec_c "${SYSTEMCTL} enable containerd";
+    exec_c "${SYSTEMCTL} restart containerd";
 }
 
 function setup_etcd_conf() {
@@ -183,7 +186,7 @@ function setup_kube_controller_manager() {
     $SED -i "s~SERVICE_KEY~${service_key}~g" $cm_env;
     $SED -i "s~CA_KEY~${KUBE_PKI}/ca.key~g" $cm_env;
     $SED -i "s~CLUSTER_CIDR~${CLUSTER_CIDR}~g" $cm_env;
-    $SED -i "s~SERVICE_CIDR~${CLUSTER_CIDR}~g" $cm_env;
+    $SED -i "s~SERVICE_CIDR~${SERVICE_CIDR}~g" $cm_env;
 
     info "finished setup_kube_controller_manager"
 

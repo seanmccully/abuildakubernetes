@@ -64,9 +64,9 @@ function etcd_build() {
 function kube_build() {
     info "starting kube_build";
     make;
-    exec_c "install -vDm 755 _output/bin/kube* /usr/bin/";
-    exec_c "install -vdm 755 /etc/kubernetes/";
-    exec_c "install -vdm 700 /etc/kubernetes/manifests";
+    exec_c "install -vdm 755 _output/bin/kube* /usr/bin/";
+    exec_c "install -vDm 755 /etc/kubernetes/";
+    exec_c "install -vDm 700 /etc/kubernetes/manifests";
 }
 
 
