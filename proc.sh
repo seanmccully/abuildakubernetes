@@ -146,35 +146,21 @@ function provision_calico() {
     info "started provision_calico";
 
     cluster_cidr=$($YQ -r '.cluster-cidr' $config_yaml);
-    pool_yaml="/tmp/ippool.yaml"
 
-    calico_manifests;
-    exec_c "kubectl apply -f ${CALICO_SRC}/manifests/crds.yaml";
-    export KUBECONFIG="/root/.kube/config";
-    export DATASTORE_TYPE=kubernetes;
-
-    cat > $pool_yaml <<EOF
-apiVersion: projectcalico.org/v3
-kind: IPPool
-metadata:
-  name: pool1
-spec:
-  cidr: ${cluster_cidr}
-  ipipMode: Never
-  natOutgoing: true
-  disabled: false
-  nodeSelector: all()
-EOF
-
-   calicoctl create -f $pool_yaml
+    calico_etcd_manifests;
 
 }
 
 
-function calico_manifests() {
+function calico_etcd_manifests() {
     info "started calico_manifests";
 
     chart_values="${CALICO_SRC}/charts/calico/values.yaml";
+    calico_manifests="${CALICO_SRC}/manifests";
+    pool_yaml="/tmp/ippool.yaml"
+
+    calicoctl=$(command -v calicoctl);
+    kubectl=$(command -v kubectl);
     export GOPATH="${GOROOT}";
     export PATH="${GOPATH}/bin:${PATH}";
     exec_c "go install golang.org/x/tools/cmd/goimports@latest";
@@ -195,6 +181,26 @@ function calico_manifests() {
     exec_c "pushd ${CALICO_SRC}/calicoctl/calicoctl/commands/crds && go generate && popd"
     exec_c "pushd ${CALICO_SRC} && find . -iname \"*.go\" ! -wholename \"./vendor/*\" | xargs goimports -w -local github.com/projectcalico/calico/ && popd"
     exec_c "pushd ${CALICO_SRC} && make gen-manifests && popd"
+
+    export KUBECONFIG="$HOME/.kube/config";
+    exec_c "${kubectl} apply -f ${calico_manifests}/crds.yaml";
+
+    cat > $pool_yaml <<EOF
+apiVersion: projectcalico.org/v3
+kind: IPPool
+metadata:
+  name: pool1
+spec:
+  cidr: ${cluster_cidr}
+  ipipMode: Never
+  natOutgoing: true
+  disabled: false
+  nodeSelector: all()
+EOF
+
+   exec_c "${calicoctl} create -f ${pool_yaml}";
+   exec_c "${kubectl} apply -f ${calico_manifests}/calico-etcd.yaml";
+
 }
 
 function kubeconfig() {
