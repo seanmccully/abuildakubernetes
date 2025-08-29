@@ -1,16 +1,16 @@
 hosts: # Hosts to build the kubernetes cluster, all hosts are considered control plane nodes, TODO: Include workers only
   - host1
   - host2
-control-plane-subnet: 172.12.12.0/24 # Control Plane CIDR 
-cni-backend: 'calico-etcd'
-cluster-ip: 172.12.12.125 # VRRP VIP for kubernetes api server, needs to be in same CIDR as control plane subnet
-service-cidr: 10.0.0.0/20 # Service CIDR to use for Kubernetes services
-cluster-cidr: 10.3.0.0/16 # Cluster CIDR to use for Kubernetes services
-cluster-domain: local.net # Kubernetes DNS domain
-cluster-name: abuildakubernetes # Kubernetes cluster name
-build-dir: /opt/cluster # Where to build the sources and certificate authority
-kube-dir: /etc/kubernetes # Where to install the kubernetes services
-kube-pki: /etc/kubernetes/pki # Where to install the kubernetes certs
-kubelet-dir: /var/lib/kubelet # Where to install kubelet services
-kube-proxy-dir: /var/lib/kube-proxy # Where to install the kube-proxy services
-kube-log-dir: /var/log/kubernetes # Kubernetes LOG dir
+controlPlane-subnet: 172.12.12.0/24 # Control Plane CIDR 
+cniBackend: 'calico-etcd'
+clusterIp: 172.12.12.125 # VRRP VIP for kubernetes api server, needs to be in same CIDR as control plane subnet
+serviceCidr: 10.0.0.0/20 # Service CIDR to use for Kubernetes services
+clusterCidr: 10.3.0.0/16 # Cluster CIDR to use for Kubernetes services
+clusterDomain: local.net # Kubernetes DNS domain
+clusterName: abuildakubernetes # Kubernetes cluster name
+buildDir: /opt/cluster # Where to build the sources and certificate authority
+kubeDir: /etc/kubernetes # Where to install the kubernetes services
+kubePki: /etc/kubernetes/pki # Where to install the kubernetes certs
+kubeletDir: /var/lib/kubelet # Where to install kubelet services
+kubeProxyDir: /var/lib/kube-proxy # Where to install the kube-proxy services
+kubeLogDir: /var/log/kubernetes # Kubernetes LOG dir

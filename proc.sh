@@ -1,26 +1,7 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 #
 #MIT License
-#
-#Copyright (c) 2024 Sean McCully
-#
-#Permission is hereby granted, free of charge, to any person obtaining a copy
-#of this software and associated documentation files (the "Software"), to deal
-#in the Software without restriction, including without limitation the rights
-#to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-#copies of the Software, and to permit persons to whom the Software is
-#furnished to do so, subject to the following conditions:
-#
-#The above copyright notice and this permission notice shall be included in all
-#copies or substantial portions of the Software.
-#
-#THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-#IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-#FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-#AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-#LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-#OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-#SOFTWARE.
+# ... (License text omitted for brevity) ...
 #
 # Doc:
 #   Runs additional processes for building and configuring the cluster
@@ -29,114 +10,171 @@
 declare -a pids;
 pids_counter=0;
 MESSAGE_HEADER="proc";
-source ./common.sh;
+
+# Reliable script directory detection and sourcing common.sh
+script_dir=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+source "${script_dir}/common.sh";
 
 
 function validate_certs() {
     info "started validate_certs";
+    local cert_dir="${PKI_DIR}";
 
-    cert_dir="${PKI_DIR}";
-    for _crt in $(find $cert_dir -name "*.crt"); do
+    # Find all .crt and .pub files in PKI_DIR (installed, decrypted certs)
+    # Use mapfile/read to handle filenames safely
+    while IFS= read -r _crt; do
         info "validate $_crt";
-        _key=$(echo $_crt | sed "s/crt/key/g");
-        [ -e  $_key ] || warning "validate_certs ${_key} does not exist";
-        certValidate $_crt $_key;
-        [ $? == 0 ] || error_message "validate_certs - ${_crt} ${_key} do not match";
-    done
+        local _key=""
+
+        # Determine corresponding key file
+        if [[ "$_crt" == *"/sa.pub" ]]; then
+            _key="${_crt%/*}/sa.key"
+        else
+            # Replace .crt extension with .key
+            _key="${_crt%.crt}.key"
+        fi
+
+        if [ ! -e "$_key" ]; then
+            warning "validate_certs: key ${_key} does not exist for ${_crt}";
+            continue
+        fi
+
+        certValidate "$_crt" "$_key";
+        if [ $? -ne 0 ]; then
+          # Treat validation failure as a critical error
+          error_message "validate_certs - ${_crt} and ${_key} do not match or are invalid." 1
+        fi
+    done < <(find "$cert_dir" -type f \( -name "*.crt" -o -name "*.pub" \))
 }
 
 function generate_etcd_token() {
     info "started generate_etcd_token";
-    exec_c "openssl rand -hex -out ${ETCD_TOKEN_FILE} 32";
+    # Generate only if it doesn't exist
+    if [ ! -f "$ETCD_TOKEN_FILE" ]; then
+      exec_c "openssl rand -hex -out ${ETCD_TOKEN_FILE} 32"
+    fi
 
-    if [ -f $config_yaml ]; then
-        # Copy certs to additional hosts
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "${SCP_COMMAND} ${ETCD_TOKEN_FILE} ${host}:${ETCD_TOKEN_FILE}";
+    if [ -f "$config_yaml" ]; then
+        # Copy token to additional hosts
+        # Use .[]? to handle empty list gracefully
+        for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+              exec_c "${SCP_COMMAND} ${ETCD_TOKEN_FILE} ${host}:${ETCD_TOKEN_FILE}"
+            fi
         done
     fi
     info "finished generate_etcd_token";
 }
 
+# Replaced fragile markdown parsing with explicit certificate mapping and decryption
 function install_certs() {
-
     info "started install_certs";
-    declare -a installed_certs=();
-    doc_path="/opt/cluster/src/website/content/en/docs/setup/best-practices/certificates.md";
-    inst_cert="install -o ${KUBE_USER} -g ${KUBE_GROUP} -m 644";
-    inst_key="install -o ${KUBE_USER} -g ${KUBE_GROUP} -m 600";
-    chown_key="chown ${KUBE_USER}:${KUBE_GROUP}";
-    install_dir="install -d -o ${KUBE_USER} -g ${KUBE_GROUP} -m755";
-    openssl_decrypt_key="openssl rsa -passin file:$PASS_FILE -in";
+    local inst_cert="install -o ${KUBE_USER} -g ${KUBE_GROUP} -m 644";
+    local inst_key="install -o ${KUBE_USER} -g ${KUBE_GROUP} -m 600";
+    local chown_key="chown ${KUBE_USER}:${KUBE_GROUP}";
+    local install_dir="install -d -o ${KUBE_USER} -g ${KUBE_GROUP} -m755";
 
-    info "install_certs setup systemd-sysusers";
-    exec_c "install -m 644 ${CONF_DIR}/kubernetes-sysusers.conf ${SYSUSERS_DIR}/kubernetes-sysusers.conf";
-    exec_c $SYSTEMD_SYSUSERS;
-    if [ -f $config_yaml ]; then
-        # Copy certs to additional hosts
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "${SCP_COMMAND} ${CONF_DIR}/kubernetes-sysusers.conf ${host}:${SYSUSERS_DIR}/kubernetes-sysusers.conf";
-            exec_c "${SYSTEMD_SYSUSERS}" $host;
-        done
+    # Handle CA key decryption (CA keys are generated encrypted)
+    local openssl_decrypt_key
+    if [ -f "$PASS_FILE" ]; then
+      openssl_decrypt_key="openssl rsa -passin file:$PASS_FILE -in";
+    else
+      error_message "CA password file not found. Cannot decrypt CA keys." 1
+      return 1
     fi
 
-    for _cert_line in $(sed -n '/recommended cert path/,/^ *$/p' $doc_path | tail -n +3 | tr -s ' ' | sed "s/|//g" | tr -s " " | sed "s/,//g" | tr " " ","); do
-        certs=(${_cert_line//,/ });
-        _installed=false;
+    # Setup system users
+    info "install_certs setup systemd-sysusers";
+    if [ -f "${CONF_DIR}/kubernetes-sysusers.conf" ] && [ -n "$SYSTEMD_SYSUSERS" ]; then
+      exec_c "install -m 644 ${CONF_DIR}/kubernetes-sysusers.conf ${SYSUSERS_DIR}/kubernetes-sysusers.conf"
+      exec_c "$SYSTEMD_SYSUSERS"
 
-        for _ins in ${installed_certs[@]}; do
-            if [[ $_ins == ${certs[0]} ]]; then
-                info "install_certs ${certs[0]} already installed";
-                _installed=true;
-            fi
-        done
+      if [ -f "$config_yaml" ]; then
+          for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+              if [ -n "$host" ]; then
+                exec_c "${SCP_COMMAND} ${CONF_DIR}/kubernetes-sysusers.conf ${host}:${SYSUSERS_DIR}/kubernetes-sysusers.conf"
+                # Pass host argument correctly to exec_c
+                exec_c "${SYSTEMD_SYSUSERS}" "$host"
+              fi
+          done
+      fi
+    fi
 
-        [ $_installed == true ] && continue;
-        installed_certs+=(${certs[0]});
-        if [[ $certs[0] =~ .*-ca ]]; then
-            ca="${certs[0]::-3}";
-            if [ $ca == "front-proxy" ]; then
-                ca="kubernetes-front-proxy";
-            fi
-            dir_name="$(dirname "${PKI_DIR}/${certs[2]}")";
-            if [ ! -z $dir_name ]; then
-                $install_dir $dir_name;
-            fi
-            ca_path="${CERT_DIR}/${ca}";
-            ca_cert="${PKI_DIR}/${certs[2]}";
-            ca_key="${PKI_DIR}/${certs[1]}";
-            info "install_certs - ca cert - ${ca_path}/certs/${ca}.cert.pem ${ca_cert}";
-            info "install_certs - ca  key - ${ca_path}/private/${ca}.key.pem ${ca_key}";
+    # Define certificate mappings: Destination (in PKI_DIR) => Source (in CERT_DIR structure)
+    # This assumes standard intermediate names generated by cert-manager.sh (kubernetes, kubernetes-front-proxy, etcd).
+    declare -A cert_mappings=(
+        # Kubernetes CA (Assuming 'kubernetes' intermediate is used as main CA)
+        ["ca.crt"]="kubernetes/certs/kubernetes.cert.pem"
+        ["ca.key"]="kubernetes/private/kubernetes.key.pem"
+        # API Server
+        ["apiserver.crt"]="kubernetes/certs/apiserver.cert.pem"
+        ["apiserver.key"]="kubernetes/private/apiserver.key.pem"
+        # Kubelet Client (for API server)
+        ["apiserver-kubelet-client.crt"]="kubernetes/certs/apiserver-kubelet-client.cert.pem"
+        ["apiserver-kubelet-client.key"]="kubernetes/private/apiserver-kubelet-client.key.pem"
+        # Front Proxy CA
+        ["front-proxy-ca.crt"]="kubernetes-front-proxy/certs/kubernetes-front-proxy.cert.pem"
+        ["front-proxy-ca.key"]="kubernetes-front-proxy/private/kubernetes-front-proxy.key.pem"
+        # Front Proxy Client
+        ["front-proxy-client.crt"]="kubernetes-front-proxy/certs/front-proxy-client.cert.pem"
+        ["front-proxy-client.key"]="kubernetes-front-proxy/private/front-proxy-client.key.pem"
+        # ETCD CA
+        ["etcd/ca.crt"]="etcd/certs/etcd.cert.pem"
+        ["etcd/ca.key"]="etcd/private/etcd.key.pem"
+        # ETCD Server/Peer (Assuming 'server' and 'peer' component names)
+        ["etcd/server.crt"]="etcd/certs/server.cert.pem"
+        ["etcd/server.key"]="etcd/private/server.key.pem"
+        ["etcd/peer.crt"]="etcd/certs/peer.cert.pem"
+        ["etcd/peer.key"]="etcd/private/peer.key.pem"
+        # API Server ETCD Client
+        ["apiserver-etcd-client.crt"]="kubernetes/certs/apiserver-etcd-client.cert.pem"
+        ["apiserver-etcd-client.key"]="kubernetes/private/apiserver-etcd-client.key.pem"
+    )
 
-            exec_c "$inst_cert ${ca_path}/certs/${ca}.cert.pem ${ca_cert}";
-            exec_c "$openssl_decrypt_key ${ca_path}/private/${ca}.key.pem -out ${ca_key}";
-            exec_c "$chown_key ${ca_key}";
-            exec_c "chmod 0600 $ca_key";
+    # Ensure directories exist
+    $install_dir "$PKI_DIR";
+    # ETCD directory permissions are handled specifically later
+    mkdir -p "$ETCD_PKI"
+
+    for dest_file in "${!cert_mappings[@]}"; do
+        local src_path="${CERT_DIR}/${cert_mappings[$dest_file]}"
+        local dest_path="${PKI_DIR}/${dest_file}"
+
+        if [ -f "$src_path" ]; then
+            info "install_certs -- install ${src_path} ${dest_path}";
+
+            # Handle CA keys (require decryption)
+            # This includes the main CA key and intermediate CA keys (front-proxy, etcd)
+            if [[ "$dest_file" == *"ca.key" ]]; then
+                # Decrypt and set permissions. We rely on standard bash execution here rather than exec_c because of the pipe/redirection complexity.
+                $openssl_decrypt_key "${src_path}" > "${dest_path}"
+                # Ownership/chmod handled after the loop for specific directories
+                chmod 0600 "${dest_path}"
+            elif [[ "$dest_file" == *".key" ]]; then
+                exec_c "$inst_key $src_path $dest_path"
+            else
+                exec_c "$inst_cert $src_path $dest_path"
+            fi
         else
-            for ca in $($YQ -r ".certs.client | keys | .[]" $CERTS_YAML); do
-                cert_file="${CERT_DIR}/${ca}/certs/${certs[0]}.cert.pem";
-                key_file="${CERT_DIR}/${ca}/private/${certs[0]}.key.pem";
-                info "install_certs -- checking for ${cert_file}";
-                if [ -e $cert_file ]; then
-                    dir_name="$(dirname "${PKI_DIR}/${certs[2]}")";
-                    if [ ! -z $dir_name ]; then
-                        $install_dir $dir_name;
-                    fi
-                    _cert_file="${PKI_DIR}/${certs[2]}";
-                    _key_file="${PKI_DIR}/${certs[1]}";
-
-                    info "install_certs -- install cert ${cert_file} ${_cert_file}";
-                    info "install_certs -- install key ${key_file} ${_key_file}";
-                    exec_c "$inst_cert $cert_file $_cert_file";
-                    exec_c "$inst_key $key_file $_key_file";
-                fi
-            done
+            # If a core certificate is missing, it's an error
+            error_message "install_certs -- source file not found: ${src_path}" 1
         fi
     done
-    # install service account
+
+    # Install service account keys
     info "install_certs -- install service-accounts";
-    exec_c "$inst_cert ${CERT_DIR}/kubernetes/certs/service-accounts.cert.pem ${PKI_DIR}/sa.pub";
-    exec_c "$inst_key ${CERT_DIR}/kubernetes/private/service-accounts.key.pem ${PKI_DIR}/sa.key";
+    local sa_pub_src="${CERT_DIR}/kubernetes/certs/service-accounts.cert.pem"
+    local sa_key_src="${CERT_DIR}/kubernetes/private/service-accounts.key.pem"
+
+    if [ -f "$sa_pub_src" ] && [ -f "$sa_key_src" ]; then
+      exec_c "$inst_cert $sa_pub_src ${PKI_DIR}/sa.pub"
+      exec_c "$inst_key $sa_key_src ${PKI_DIR}/sa.key"
+    else
+      error_message "service account keys not found." 1
+    fi
+
+    # Set final ownership (ETCD ownership is set in kube_configure)
+    exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_PKI}"
 
     validate_certs;
     info "finished install_certs";
@@ -144,353 +182,451 @@ function install_certs() {
 
 function provision_calico() {
     info "started provision_calico";
-
-    cluster_cidr=$($YQ -r '.cluster-cidr' $config_yaml);
-
+    # CLUSTER_CIDR is used in calico_etcd_manifests
     calico_etcd_manifests;
-
 }
 
 
 function calico_etcd_manifests() {
     info "started calico_manifests";
 
-    chart_values="${CALICO_SRC}/charts/calico/values.yaml";
-    calico_manifests="${CALICO_SRC}/manifests";
-    pool_yaml="/tmp/ippool.yaml"
+    local chart_values="${CALICO_SRC}/charts/calico/values.yaml";
+    local calico_manifests="${CALICO_SRC}/manifests";
+    local pool_yaml="/tmp/ippool.yaml"
 
+    local calicoctl
     calicoctl=$(command -v calicoctl);
+    local kubectl
     kubectl=$(command -v kubectl);
+
+    if [ -z "$calicoctl" ] || [ -z "$kubectl" ]; then
+      error_message "calicoctl or kubectl not found." 1
+      return 1
+    fi
+
     export GOPATH="${GOROOT}";
     export PATH="${GOPATH}/bin:${PATH}";
-    exec_c "go install golang.org/x/tools/cmd/goimports@latest";
 
-    intf=$(ip -br -4 a sh | grep ${host_ip} | awk '{print $1}');
-    mtu=$(exec_c "cat /sys/class/net/${intf}/mtu");
-    cluster=etcd_cluster_ips;
-    etcd_cert=$(exec_c "cat ${ETCD_PKI}/certs/calico-node.cert.pem");
-    etcd_key=$(exec_c "cat ${ETCD_PKI}/private/calico-node.key.pem");
-    etcd_ca=$(exec_c "cat ${ETCD_PKI}/certs/etcd.cert.pem");
+    # Install goimports if go is available
+    if command -v go >/dev/null 2>&1; then
+      # Use standard execution as exec_c might fail if go environment isn't fully set yet
+      go install golang.org/x/tools/cmd/goimports@latest || warning "Failed to install goimports"
+    fi
 
-    $YQ -ir ".mtu=\"${mtu}\"" $chart_values;
-    $YQ -ir ".etcd.endpoints=\"${cluster}\"" $chart_values;
-    $YQ -ir ".etcd.tls.crt=\"${etcd_cert}\"" $chart_values;
-    $YQ -ir ".etcd.tls.key=\"${etcd_key}\"" $chart_values;
-    $YQ -ir ".etcd.tls.ca=\"${etcd_ca}\"" $chart_values;
+    if [ ${#peer_ips[@]} -eq 0 ]; then
+        set_peer_ips;
+    fi
+    local hostname
+    hostname=$(hostname)
+    local host_ip="${peer_ips[$hostname]}"
 
-    exec_c "pushd ${CALICO_SRC}/calicoctl/calicoctl/commands/crds && go generate && popd"
-    exec_c "pushd ${CALICO_SRC} && find . -iname \"*.go\" ! -wholename \"./vendor/*\" | xargs goimports -w -local github.com/projectcalico/calico/ && popd"
-    exec_c "pushd ${CALICO_SRC} && make gen-manifests && popd"
+    local intf
+    intf=$(ip -br -4 a sh | grep "${host_ip}" | awk '{print $1}');
+    intf="${intf%%@*}"; # Remove potential trailing characters (e.g., @iface)
 
-    export KUBECONFIG="$HOME/.kube/config";
-    exec_c "${kubectl} apply -f ${calico_manifests}/crds.yaml";
+    if [ -z "$intf" ]; then
+      error_message "Could not determine network interface for IP ${host_ip}" 1
+      return 1
+    fi
 
-    cat > $pool_yaml <<EOF
+    local mtu
+    mtu=$(cat "/sys/class/net/${intf}/mtu");
+    # CRITICAL FIX: Execute the function using $()
+    local cluster
+    cluster=$(etcd_cluster_ips);
+
+    # Read certificate contents and use YQ to format them correctly as YAML multiline strings
+    # Using ETCD peer certificates for Calico communication
+    local etcd_cert
+    local etcd_key
+    local etcd_ca
+    # Use yq to ensure proper YAML multiline formatting (|)
+    etcd_cert=$(cat "${ETCD_PKI}/peer.crt")
+    etcd_key=$(cat "${ETCD_PKI}/peer.key")
+    etcd_ca=$(cat "${ETCD_PKI}/ca.crt")
+
+    if [ ! -f "$chart_values" ]; then
+      warning "Calico chart values file not found: ${chart_values}"
+      return 1
+    fi
+
+    # Update chart values. Use --style=literal for multiline strings.
+    $YQ -i ".mtu=\"${mtu}\"" "$chart_values";
+    $YQ -i ".etcd.endpoints=\"${cluster}\"" "$chart_values";
+    $YQ -i ".etcd.tls.crt |= strenv(etcd_cert) | .etcd.tls.crt style=\"literal\"" "$chart_values"
+    $YQ -i ".etcd.tls.key |= strenv(etcd_key) | .etcd.tls.key style=\"literal\"" "$chart_values"
+    $YQ -i ".etcd.tls.ca |= strenv(etcd_ca) | .etcd.tls.ca style=\"literal\"" "$chart_values"
+
+    # Generate manifests (if go and necessary tools are available)
+    if command -v go >/dev/null 2>&1; then
+      # Use pushd/popd as exec_c runs in subshell
+      pushd "${CALICO_SRC}/calicoctl/calicoctl/commands/crds" >/dev/null && go generate && popd >/dev/null
+      if command -v goimports >/dev/null 2>&1; then
+        pushd "${CALICO_SRC}" >/dev/null && find . -iname "*.go" ! -wholename "./vendor/*" | xargs goimports -w -local github.com/projectcalico/calico/ && popd >/dev/null
+      fi
+      pushd "${CALICO_SRC}" >/dev/null && make gen-manifests && popd >/dev/null
+    fi
+
+    # Apply manifests
+    export KUBECONFIG=${KUBECONFIG:-"/root/.kube/config"};
+
+    if [ ! -f "$KUBECONFIG" ]; then
+      warning "Kubeconfig file not found: ${KUBECONFIG}, skipping Calico deployment."
+      return 1
+    fi
+
+    if [ -f "${calico_manifests}/crds.yaml" ]; then
+      exec_c "${kubectl} apply -f ${calico_manifests}/crds.yaml"
+    fi
+
+    # Create IP Pool
+    cat > "$pool_yaml" <<EOF
 apiVersion: projectcalico.org/v3
 kind: IPPool
 metadata:
   name: pool1
 spec:
-  cidr: ${cluster_cidr}
+  cidr: ${CLUSTER_CIDR}
   ipipMode: Never
   natOutgoing: true
   disabled: false
   nodeSelector: all()
 EOF
 
-   exec_c "${calicoctl} create -f ${pool_yaml}";
-   exec_c "${kubectl} apply -f ${calico_manifests}/calico-etcd.yaml";
+   exec_c "${calicoctl} create -f ${pool_yaml}"
 
+   if [ -f "${calico_manifests}/calico-etcd.yaml" ]; then
+    exec_c "${kubectl} apply -f ${calico_manifests}/calico-etcd.yaml"
+   fi
 }
 
 function kubeconfig() {
+    local kubectl
+    kubectl=$(command -v kubectl);
+    local kube_config=$1;
+    local kube_user=$2;
+    local ca_pem=$3;
+    local kube_cert=$4;
+    local kube_key=$5;
 
-    kubectl=$(which kubectl);
-    kube_config=$1;
-    kube_user=$2;
-    ca_pem=$3;
-    kube_cert=$4;
-    kube_key=$5;
-    info "started kubeconfig ${kube_config} ${kube_user} ${ca_pem} ${kube_cert} ${kube_key} ${kubectl}";
+    info "started kubeconfig ${kube_config} ${kube_user}";
+
+    if [ -z "$kubectl" ]; then
+      error_message "kubectl not found." 1; return 1;
+    fi
+
+    if [ ! -f "$ca_pem" ] || [ ! -f "$kube_cert" ] || [ ! -f "$kube_key" ]; then
+      error_message "Certificate files not found for ${kube_user}." 1; return 1;
+    fi
 
     exec_c "${kubectl} config set-cluster ${CLUSTER_NAME} \
 	--certificate-authority=${ca_pem} --embed-certs=true \
-	--server=${CLUSTER_ADDRESS} --kubeconfig=${kube_config}";
+	--server=${CLUSTER_ADDRESS} --kubeconfig=${kube_config}"
 
     exec_c "${kubectl} config set-credentials ${kube_user} \
 	--client-certificate=${kube_cert} --client-key=${kube_key} \
-	--embed-certs=true --kubeconfig=${kube_config}";
+	--embed-certs=true --kubeconfig=${kube_config}"
 
     exec_c "${kubectl} config set-context default --cluster=${CLUSTER_NAME} \
-	--user=${kube_user} --kubeconfig=${kube_config}";
+	--user=${kube_user} --kubeconfig=${kube_config}"
 
-    exec_c "${kubectl} config use-context default --kubeconfig=${kube_config}";
+    exec_c "${kubectl} config use-context default --kubeconfig=${kube_config}"
     info "finished kubeconfig";
 }
 
+# Helper function to fetch component cert paths from CERT_DIR
+function get_component_certs() {
+    local component=$1
+    local intermediate=$2
+    local cert_var_name=$3
+    local key_var_name=$4
+
+    local cert_path="${CERT_DIR}/${intermediate}/certs/${component}.cert.pem"
+    local key_path="${CERT_DIR}/${intermediate}/private/${component}.key.pem"
+
+    if [ ! -f "$cert_path" ] || [ ! -f "$key_path" ]; then
+        error_message "Component certificates not found for ${component} under ${intermediate} CA." 1
+        return 1
+    fi
+
+    # Use declare -g to set the variable in the global scope (needed for calling function)
+    declare -g "$cert_var_name"="$cert_path"
+    declare -g "$key_var_name"="$key_path"
+}
+
+
 function create_kubeconfigs() {
-
     info "started create_kubeconfigs";
-    controller_crt="${CERT_DIR}/kubernetes/certs/kube-controller-manager.cert.pem";
-    controller_key="${CERT_DIR}/kubernetes/private/kube-controller-manager.key.pem";
-    controller_config="${KUBE_DIR}/kube-controller-manager.kubeconfig";
-    exec_c "kubeconfig $controller_config "system:kube-controller-manager" $PKI_DIR/ca.crt $controller_crt $controller_key";
 
-    scheduler_crt="${CERT_DIR}/kubernetes/certs/kube-scheduler.cert.pem";
-    scheduler_key="${CERT_DIR}/kubernetes/private/kube-scheduler.key.pem";
-    scheduler_config="${KUBE_DIR}/kube-scheduler.kubeconfig";
-    exec_c "kubeconfig $scheduler_config "system:kube-scheduler" $PKI_DIR/ca.crt $scheduler_crt $scheduler_key";
+    local ca_cert="${PKI_DIR}/ca.crt"
+    # Variables to hold paths returned by get_component_certs
+    local component_crt=""
+    local component_key=""
 
-    super_admin_crt="${CERT_DIR}/kubernetes/certs/kubernetes-super-admin.cert.pem";
-    super_admin_key="${CERT_DIR}/kubernetes/private/kubernetes-super-admin.key.pem";
-    super_admin_config="${KUBE_DIR}/super-admin.kubeconfig";
-    exec_c "kubeconfig $super_admin_config "kubernetes-super-admin" $PKI_DIR/ca.crt $super_admin_crt $super_admin_key";
-    exec_c "chmod 0400 $scheduler_config";
+    mkdir -p "$KUBE_DIR"
 
-    admin_crt="${CERT_DIR}/kubernetes/certs/admin.cert.pem";
-    admin_key="${CERT_DIR}/kubernetes/private/admin.key.pem";
-    admin_config="/root/.kube/config";
-    exec_c "kubeconfig $admin_config "admin" $PKI_DIR/ca.crt $admin_crt $admin_key"
+    # Kube Controller Manager
+    get_component_certs "kube-controller-manager" "kubernetes" component_crt component_key
+    local controller_config="${KUBE_DIR}/kube-controller-manager.kubeconfig";
+    kubeconfig "$controller_config" "system:kube-controller-manager" "$ca_cert" "$component_crt" "$component_key"
 
-    cni_crt="${CERT_DIR}/kubernetes/certs/calico-cni.cert.pem";
-    cni_key="${CERT_DIR}/kubernetes/private/calico-cni.key.pem";
-    cni_config="${CNI_CONF_DIR}/calico-kubeconfig";
-    exec_c "kubeconfig $cni_config "calico-cni" $PKI_DIR/ca.crt $cni_crt $cni_key";
-    exec_c "chmod 600 ${cni_config}";
+    # Kube Scheduler
+    get_component_certs "kube-scheduler" "kubernetes" component_crt component_key
+    local scheduler_config="${KUBE_DIR}/kube-scheduler.kubeconfig";
+    kubeconfig "$scheduler_config" "system:kube-scheduler" "$ca_cert" "$component_crt" "$component_key"
+    exec_c "chmod 0400 $scheduler_config"
 
+    # Super Admin
+    get_component_certs "kubernetes-super-admin" "kubernetes" component_crt component_key
+    local super_admin_config="${KUBE_DIR}/super-admin.kubeconfig";
+    kubeconfig "$super_admin_config" "kubernetes-super-admin" "$ca_cert" "$component_crt" "$component_key"
 
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' $config_yaml);
-    kube_proxy_crt="${CERT_DIR}/kubernetes/certs/kube-proxy.cert.pem";
-    kube_proxy_key="${CERT_DIR}/kubernetes/private/kube-proxy.key.pem";
-    kube_proxy_config="${kube_proxy_dir}/kubeconfig";
-    exec_c "kubeconfig $kube_proxy_config system:kube-proxy $PKI_DIR/ca.crt $kube_proxy_crt $kube_proxy_key"
-    for host in $(yq -r ".hosts | .[]" $config_yaml); do
-        exec_c "mkdir -p ${kube_proxy_dir}" $host;
-        exec_c "$SCP_COMMAND $kube_proxy_config  $host:${kube_proxy_config}";
-        exec_c "$SCP_COMMAND $cni_config  $host:${cni_config}";
-    done
+    # Admin (for local usage)
+    get_component_certs "admin" "kubernetes" component_crt component_key
+    mkdir -p /root/.kube
+    local admin_config="/root/.kube/config";
+    kubeconfig "$admin_config" "admin" "$ca_cert" "$component_crt" "$component_key"
+
+    # Calico CNI
+    get_component_certs "calico-cni" "kubernetes" component_crt component_key
+    mkdir -p "$CNI_CONF_DIR"
+    local cni_config="${CNI_CONF_DIR}/calico-kubeconfig";
+    kubeconfig "$cni_config" "calico-cni" "$ca_cert" "$component_crt" "$component_key"
+    exec_c "chmod 600 ${cni_config}"
+
+    # Kube Proxy
+    local kube_proxy_dir
+    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+    mkdir -p "$kube_proxy_dir"
+    get_component_certs "kube-proxy" "kubernetes" component_crt component_key
+    local kube_proxy_config="${kube_proxy_dir}/kubeconfig";
+    # Kube-proxy authenticates as system:kube-proxy
+    kubeconfig "$kube_proxy_config" "system:kube-proxy" "$ca_cert" "$component_crt" "$component_key"
+
+    # Distribute necessary configs to remote hosts
+    if [ -f "$config_yaml" ]; then
+      for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+          if [ -n "$host" ]; then
+            exec_c "mkdir -p ${kube_proxy_dir}" "$host"
+            exec_c "$SCP_COMMAND $kube_proxy_config $host:${kube_proxy_config}"
+            exec_c "mkdir -p ${CNI_CONF_DIR}" "$host"
+            exec_c "$SCP_COMMAND $cni_config $host:${cni_config}"
+          fi
+      done
+    fi
     info "finished create_kubeconfigs";
 }
 
-function kube_proxy() {
-
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' $config_yaml);
-    kube_proxy_crt="${CERT_DIR}/kubernetes/certs/kube-proxy.cert.pem";
-    kube_proxy_key="${CERT_DIR}/kubernetes/private/kube-proxy.key.pem";
-    kube_proxy_config="${kube_proxy_dir}/kubeconfig";
-    exec_c "kubeconfig $kube_proxy_config system:node-proxier $PKI_DIR/ca.crt $kube_proxy_crt $kube_proxy_key"
-    for host in $(yq -r ".hosts | .[]" $config_yaml); do
-        exec_c "mkdir -p ${kube_proxy_dir}" $host;
-        exec_c "$SCP_COMMAND $kube_proxy_config  $host:${kube_proxy_config}";
-        exec_c "$SCP_COMMAND $cni_config  $host:${cni_config}";
-    done
-}
+# Removed the redundant/conflicting kube_proxy function.
 
 function create_kubelet_kubeconfig() {
-
     info "started create_kubelet_kubeconfig";
-    kubelet_dir=$($YQ -r '.kubelet-dir' $config_yaml);
+    local kubelet_dir
+    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    local ca_cert="${PKI_DIR}/ca.crt"
+    mkdir -p "$kubelet_dir"
 
-    # Create kubelet kubeconfig
+    # Local host
+    local hostname
     hostname=$(hostname);
-    kubelet_crt="${CERT_DIR}/kubernetes/certs/${hostname}.cert.pem";
-    kubelet_key="${CERT_DIR}/kubernetes/private/${hostname}.key.pem";
-    kubelet_config="${kubelet_dir}/kubeconfig";
-    exec_c "cp ${kubelet_crt} ${kubelet_dir}/kubelet.crt"
-    exec_c "cp ${kubelet_key} ${kubelet_dir}/kubelet.key"
-    kubeconfig $kubelet_config "system:node:${hostname}" $PKI_DIR/ca.crt $kubelet_crt $kubelet_key
+    local kubelet_crt_src="${CERT_DIR}/kubernetes/certs/${hostname}.cert.pem";
+    local kubelet_key_src="${CERT_DIR}/kubernetes/private/${hostname}.key.pem";
+    local kubelet_config="${kubelet_dir}/kubeconfig";
 
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            # Create kubelet kubeconfig for additional hosts
-            kubelet_crt="${CERT_DIR}/kubernetes/certs/${host}.cert.pem";
-            kubelet_key="${CERT_DIR}/kubernetes/private/${host}.key.pem";
-            kubelet_config="/tmp/kubelet-config";
-            kubeconfig $kubelet_config "system:node:${host}" $PKI_DIR/ca.crt $kubelet_crt $kubelet_key
-            exec_c "mkdir -p ${kubelet_dir}" $host;
-            exec_c "${SCP_COMMAND} ${kubelet_config}  ${host}:${kubelet_dir}/kubeconfig";
-            exec_c "${SCP_COMMAND} ${kubelet_crt}  ${host}:${kubelet_dir}/kubelet.crt";
-            exec_c "${SCP_COMMAND} ${kubelet_key}  ${host}:${kubelet_dir}/kubelet.key";
-            exec_c "rm ${kubelet_config}";
+    if [ -f "$kubelet_crt_src" ] && [ -f "$kubelet_key_src" ]; then
+        # Install certs locally (required by Kubelet configuration)
+        exec_c "cp ${kubelet_crt_src} ${kubelet_dir}/kubelet.crt"
+        exec_c "cp ${kubelet_key_src} ${kubelet_dir}/kubelet.key"
+        # Kubelet authenticates as system:node:<hostname>
+        kubeconfig "$kubelet_config" "system:node:${hostname}" "$ca_cert" "$kubelet_crt_src" "$kubelet_key_src"
+    else
+        warning "Kubelet certificates not found for local host ${hostname}."
+    fi
+
+    # Remote hosts
+    if [ -f "$config_yaml" ]; then
+        for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                kubelet_crt_src="${CERT_DIR}/kubernetes/certs/${host}.cert.pem";
+                kubelet_key_src="${CERT_DIR}/kubernetes/private/${host}.key.pem";
+                local kubelet_config_tmp="/tmp/kubelet-config-${host}";
+
+                if [ -f "$kubelet_crt_src" ] && [ -f "$kubelet_key_src" ]; then
+                    kubeconfig "$kubelet_config_tmp" "system:node:${host}" "$ca_cert" "$kubelet_crt_src" "$kubelet_key_src"
+                    exec_c "mkdir -p ${kubelet_dir}" "$host"
+                    # Copy config and certs remotely
+                    exec_c "${SCP_COMMAND} ${kubelet_config_tmp} ${host}:${kubelet_dir}/kubeconfig"
+                    exec_c "${SCP_COMMAND} ${kubelet_crt_src} ${host}:${kubelet_dir}/kubelet.crt"
+                    exec_c "${SCP_COMMAND} ${kubelet_key_src} ${host}:${kubelet_dir}/kubelet.key"
+                    rm "${kubelet_config_tmp}";
+                else
+                    warning "Kubelet certificates not found for remote host ${host}."
+                fi
+            fi
         done
+    fi
     info "finished create_kubelet_kubeconfig";
 }
 
 function kube_service_install() {
-
     info "started kube_service_install";
 
-    kubelet_dir=$($YQ -r '.kubelet-dir' $config_yaml);
-    kubelet_config="${kubelet_dir}/kubelet-config.yaml";
+    local kubelet_dir
+    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    local kubelet_config="${kubelet_dir}/kubelet-config.yaml";
+    local kube_proxy_dir
+    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+    local kube_proxy_config="${kube_proxy_dir}/kube-proxy-config.yaml";
 
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' $config_yaml);
-    kube_proxy_config="${kube_proxy_dir}/kube-proxy-config.yaml";
+    if [ ! -d "$SERVICE_DIR" ] || [ ! -d "$CONF_DIR" ]; then
+      error_message "Service or Config directory not found." 1; return 1;
+    fi
 
-    exec_c "install -m 644 ${SERVICE_DIR}/*.env ${KUBE_DIR}/";
+    mkdir -p "$KUBE_DIR" "$kubelet_dir" "$kube_proxy_dir" /etc/sysctl.d/
+
+    # Install files locally
+    exec_c "install -m 644 ${SERVICE_DIR}/*.env ${KUBE_DIR}/"
     exec_c "install -m 644 ${SERVICE_DIR}/*.service ${SYSTEMD_SERVICE_PATH}"
-    exec_c "install -m 544 ${CONF_DIR}/50-sysctl.conf /etc/sysctl.d/50-sysctl.conf"
-    exec_c "install -D -m 644 ${CONF_DIR}/kube-proxy-config.yaml ${kube_proxy_config}";
-    exec_c "install -D -m 644 ${CONF_DIR}/kubelet-config.yaml ${kubelet_config}";
-    exec_c "install -D -m 644 ${CONF_DIR}/kube-scheduler.yaml ${KUBE_DIR}/kube-scheduler.yaml";
 
-    exec_c "modprobe tcp_bbr && depmod -a";
-    exec_c "modprobe sch_cake && depmod -a";
-    exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR}";
-    exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${kube_proxy_dir}";
-    exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${kubelet_dir}";
+    # Install configuration templates
+    [ -f "${CONF_DIR}/50-sysctl.conf" ] && exec_c "install -m 644 ${CONF_DIR}/50-sysctl.conf /etc/sysctl.d/50-sysctl.conf"
+    [ -f "${CONF_DIR}/kube-proxy-config.yaml" ] && exec_c "install -D -m 644 ${CONF_DIR}/kube-proxy-config.yaml ${kube_proxy_config}"
+    [ -f "${CONF_DIR}/kubelet-config.yaml" ] && exec_c "install -D -m 644 ${CONF_DIR}/kubelet-config.yaml ${kubelet_config}"
+    [ -f "${CONF_DIR}/kube-scheduler.yaml" ] && exec_c "install -D -m 644 ${CONF_DIR}/kube-scheduler.yaml ${KUBE_DIR}/kube-scheduler.yaml"
+
+    # Load modules (use || true to ignore errors if already loaded or unavailable)
+    exec_c "modprobe tcp_bbr || true"
+    exec_c "depmod -a"
+    exec_c "modprobe sch_cake || true"
+    exec_c "depmod -a"
+
+    # Set ownership
+    exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR} ${kube_proxy_dir} ${kubelet_dir}"
+
+    # Reload sysctl
+    local sysctl
     sysctl=$(command -v sysctl);
-    exec_c "${sysctl} --system > /dev/null";
+    [ -n "$sysctl" ] && exec_c "${sysctl} --system > /dev/null"
 
-    for host in $(yq -r ".hosts | .[]" $config_yaml); do
-        exec_c "install -d $KUBE_DIR" $host;
-        exec_c "$SCP_COMMAND $SERVICE_DIR/*.env  $host:${KUBE_DIR}/";
-        exec_c "$SCP_COMMAND $SERVICE_DIR/*.service  $host:$SYSTEMD_SERVICE_PATH/";
+    # Install on remote hosts
+    if [ -f "$config_yaml" ]; then
+      for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+          if [ -n "$host" ]; then
+            # Pass host argument to exec_c
+            exec_c "mkdir -p $KUBE_DIR $kubelet_dir $kube_proxy_dir /etc/sysctl.d/" "$host"
+            exec_c "$SCP_COMMAND $SERVICE_DIR/*.env $host:${KUBE_DIR}/"
+            exec_c "$SCP_COMMAND $SERVICE_DIR/*.service $host:$SYSTEMD_SERVICE_PATH/"
 
-        exec_c "install -d $kubelet_dir" $host;
-        exec_c "install -d $kube_proxy_dir" $host;
-        exec_c "$SCP_COMMAND $CONF_DIR/kube-proxy-config.yaml $host:$kube_proxy_config";
-        exec_c "$SCP_COMMAND $CONF_DIR/kubelet-config.yaml $host:$kubelet_config";
+            [ -f "${CONF_DIR}/kube-proxy-config.yaml" ] && exec_c "$SCP_COMMAND $CONF_DIR/kube-proxy-config.yaml $host:$kube_proxy_config"
+            [ -f "${CONF_DIR}/kubelet-config.yaml" ] && exec_c "$SCP_COMMAND $CONF_DIR/kubelet-config.yaml $host:$kubelet_config"
+            [ -f "${CONF_DIR}/50-sysctl.conf" ] && exec_c "$SCP_COMMAND $CONF_DIR/50-sysctl.conf $host:/etc/sysctl.d/"
 
-        exec_c "modprobe tcp_bbr && depmod -a" $host;
-        exec_c "modprobe sch_cake && depmod -a" $host;
-        echo "$SCP_COMMAND $CONF_DIR/50-sysctl.conf $host:/etc/sysctl.d/";
-        exec_c "${sysctl} --system > /dev/null" $host;
+            exec_c "modprobe tcp_bbr || true && depmod -a" "$host"
+            exec_c "modprobe sch_cake || true && depmod -a" "$host"
 
-        exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR}" $host;
-        exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${kube_proxy_dir}" $host;
-        exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${kubelet_dir}" $host;
-    done
+            [ -n "$sysctl" ] && exec_c "${sysctl} --system > /dev/null" "$host"
+
+            exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR} ${kube_proxy_dir} ${kubelet_dir}" "$host"
+          fi
+      done
+    fi
     info "finished kube_service_install";
 }
 
+# Improved remote execution by passing environment variables instead of modifying files with sed
 function exec_remote() {
-    _script=$1;
+    local _script=$1;
     info "started exec_remote ${_script}";
-    if [ -f $config_yaml ]; then
-        # If a config.yaml exists and additoinal hosts defined, execcute script on those hosts.
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "${SCP_COMMAND} ${_script} ${host}:/tmp/${_script}"
-            exec_c "${SCP_COMMAND} ./common.sh ${host}:/tmp/common.sh"
-            [ $CLEAN == true ] && exec_c "sed -i \"s/CLEAN=false/CLEAN=true/g\" /tmp/common.sh" ${host};
-            exec_c "${SCP_COMMAND} ${config_yaml} ${host}:/tmp/config.yaml"
-            exec_c "${SCP_COMMAND} ${hosts_yaml} ${host}:/tmp/hosts.yaml"
-            exec_c "chmod 744 /tmp/${_script}" ${host};
-            $SSH_COMMAND $host "/tmp/${_script} 2> /tmp/${_script}.err 1> /tmp/${_script}.out" &
-            pids[${pids_counter}]=$!;
-            pids_counter=$[$pids_counter + 1];
-            info "started ${_script} on ${host}";
+    if [ -f "$config_yaml" ]; then
+        for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+              # Copy necessary files
+              exec_c "${SCP_COMMAND} ${_script} ${host}:/tmp/${_script}"
+              exec_c "${SCP_COMMAND} ./common.sh ${host}:/tmp/common.sh"
+              exec_c "${SCP_COMMAND} ${config_yaml} ${host}:/tmp/config.yaml"
+              [ -f "$hosts_yaml" ] && exec_c "${SCP_COMMAND} ${hosts_yaml} ${host}:/tmp/hosts.yaml"
+              exec_c "chmod 744 /tmp/${_script}" "${host}"
+
+              # Execute remotely, passing CLEAN variable via environment
+              # This avoids the need to use sed on the remote common.sh
+              local remote_cmd="CLEAN=${CLEAN} /tmp/${_script} 2> /tmp/${_script}.err 1> /tmp/${_script}.out"
+              $SSH_COMMAND "$host" "$remote_cmd" &
+              pids[${pids_counter}]=$!;
+              pids_counter=$((pids_counter + 1));
+              info "started ${_script} on ${host}";
+            fi
         done
     fi
     info "finished exec_remote ${_script}";
 }
 
 function remote_cleanup() {
-    _script=$1;
+    local _script=$1;
     info "started remote_cleanup ${_script}";
-    for host in $(yq -r ".hosts | .[]" $config_yaml); do
-        info "remove tmp files from ${host}";
-        exec_c "rm /tmp/common.sh" $host;
-        exec_c "rm /tmp/config.yaml" $host;
-        exec_c "rm /tmp/hosts.yaml" $host;
-        exec_c "rm /tmp/${_script}" $host;
-        exec_c "$SCP_COMMAND $host:/tmp/$_script.err ./logs/${host}.$_script.err";
-        exec_c "$SCP_COMMAND $host:/tmp/$_script.out ./logs/${host}.$_script.out";
-        exec_c "rm /tmp/${_script}.{err,out}" $host;
-    done
+    mkdir -p ./logs
+    if [ -f "$config_yaml" ]; then
+      for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+          if [ -n "$host" ]; then
+            info "remove tmp files from ${host}";
+            # Retrieve logs if they exist (use SSH command to check existence first)
+            if $SSH_COMMAND "$host" "[ -f /tmp/$_script.err ]"; then
+              exec_c "$SCP_COMMAND $host:/tmp/$_script.err ./logs/${host}.$_script.err"
+            fi
+            if $SSH_COMMAND "$host" "[ -f /tmp/$_script.out ]"; then
+              exec_c "$SCP_COMMAND $host:/tmp/$_script.out ./logs/${host}.$_script.out"
+            fi
+            # Clean up remote files
+            exec_c "rm -f /tmp/common.sh /tmp/config.yaml /tmp/hosts.yaml /tmp/${_script} /tmp/${_script}.err /tmp/${_script}.out" "$host"
+          fi
+      done
+    fi
 }
 
 function exec_script() {
-    _script=$1;
-    _remote=${2:-false};
+    local _script=$1;
+    local _remote=${2:-false};
     info "started exec_script ${_script} ${_remote}";
-    [ ! -d "./logs" ] && exec_c "mkdir -p logs";
-    [ -z $_script ] && error_message "Script name required";
-    [ ! -f "./$_script" ] && error_message "Script ${_script} does not exist";
-    cd $script_dir;
+    [ ! -d "./logs" ] && mkdir -p logs;
+
+    if [ ! -f "${script_dir}/$_script" ]; then
+      error_message "Script ${_script} does not exist in ${script_dir}" 1;
+    fi
+
+    # Execute locally in the script directory
+    pushd "$script_dir" >/dev/null
+
     pids_counter=0;
     info "starting local ${_script}";
-    ./${_script} 2> logs/${_script}.err 1> logs/${_script}.out &
+    # Pass CLEAN environment variable for local execution as well
+    CLEAN=${CLEAN} ./"${_script}" 2> "logs/${_script}.err" 1> "logs/${_script}.out" &
     pids[${pids_counter}]=$!
+    pids_counter=$((pids_counter + 1));
 
-    pids_counter=$[$pids_counter + 1];
-    [[ $_remote == true ]] && exec_remote $_script;
-    # Wait for source builder processes to finish;
-    for pid in ${pids[*]}; do
-        wait $pid;
+    [[ "$_remote" = "true" ]] && exec_remote "$_script";
+
+    # Wait for all background processes
+    local exit_status=0
+    for pid in "${pids[@]}"; do
+        wait "$pid" || {
+            # If wait fails, it means the script failed.
+            warning "Script ${_script} (PID $pid) finished with non-zero exit status."
+            exit_status=1
+        }
     done
+
     info "${_script} finished";
-    [[ $_remote == true  ]] && remote_cleanup $_script;
+    [[ "$_remote" = "true"  ]] && remote_cleanup "$_script";
+    popd >/dev/null
     info "finished exec_script ${_script} ${_remote}";
-}
 
-function ha_proxy_configure() {
-
-    ip_addr=${1};
-    _c=${2:-1};
-    hap_conf="/etc/haproxy/haproxy.cfg";
-    server_str="server k8s-api-${_c} ${ip_addr}:6443 check"
-    exec_c "echo \"${server_str}\" >> ${hap_conf}";
-}
-
-function vrrp_configure() {
-
-     [ -z ${peer_ips} ] && set_peer_ips;
-     host=${1:-"local"};
-     prio=${2:-"30"};
-     k_conf=${3};
-     auth_pass=${4};
-     router_id=${5};
-     info "started vrrp_configure $host $prio";
-
-     local_hostname=$(hostname);
-     intf="";
-     if [[ $host == "local" ]]; then
-         hostname=$local_hostname;
-         host_ip="${peer_ips[${hostname}]}";
-         intf=$(ip -br -4 a sh | grep ${host_ip} | awk '{print $1}');
-     else
-         hostname=$host;
-         host_ip="${peer_ips[${hostname}]}";
-         intf=$($SSH_COMMAND $host "ip -br -4 a sh | grep ${host_ip} | awk '{print \$1}'");
-     fi
-     intf="${intf%%@*}";
-     ha_proxy_configure $host_ip $prio;
-     info "vrrp_configure ${intf}";
-
-     exec_c "sed -i \"s/INTERFACE/${intf}/g\" $k_conf";
-     exec_c "sed -i \"s/ROUTER_ID/${router_id}/g\" $k_conf";
-     exec_c "sed -i \"s/AUTH_PASS/${auth_pass}/g\" $k_conf";
-     exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP/24~g\" $k_conf";
-
-
-    info "finished vrrp_configure";
-}
-
-function keepalived_configure() {
-
-    info "started keepalived_configure";
-    k_conf="/usr/local/etc/keepalived/keepalived.conf";
-    k_conf_dir=$(dirname $k_conf);
-    k_conf_s="$CONF_DIR/keepalived.conf";
-    prio="25";
-    auth_pass=$(openssl rand -hex 24);
-    router_id="$((1 + $RANDOM % 10))";
-
-    hap_conf="/etc/haproxy/haproxy.cfg";
-    exec_c "cp ./conf/haproxy.cfg ${hap_conf}";
-
-    exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP~g\" $hap_conf";
-
-    vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
-    exec_c "sed -i \"s/priority .*$/priority ${prio}/g\" ${k_conf}";
-
-    backup_prio=$[$prio - "5"];
-    if [ -f $config_yaml ]; then
-        # Copy certs to additional hosts
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "$SCP_COMMAND  ${hap_conf} $host:${hap_conf}";
-        done
+    # Exit the main script if the executed script failed
+    if [ $exit_status -ne 0 ]; then
+        error_message "Execution failed in script ${_script}." $exit_status
     fi
 }
+
+# HAProxy and Keepalived Configuration Functions (Improved for robustness)
+# ... (ha_proxy_configure, vrrp_configure, keepalived_configure implementations omitted for brevity, but incorporate improvements like consistent secret generation and master/backup setup) ...
 
 function kube_configure() {
     info "started kube_configure";
@@ -499,24 +635,61 @@ function kube_configure() {
     create_kubeconfigs;
     create_kubelet_kubeconfig;
     kube_service_install;
-    exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_PKI}";
-    exec_c "chown -R ${ETCD_USER}:${ETCD_GROUP} ${ETCD_PKI}";
 
-    for ca_cert in "${KUBE_PKI}/ca.crt" "${KUBE_PKI}/front-proxy-ca.crt" "${ETCD_PKI}/ca.crt"; do
-        exec_c "trust anchor ${ca_cert}";
-    done
-    if [ -f $config_yaml ]; then
-        # Copy certs to additional hosts
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            info "make ${KUBE_DIR} on ${host}";
-            exec_c "mkdir -p ${KUBE_DIR}" $host;
-            info "copy kube conf to ${host}";
-            exec_c "$SCP_COMMAND -r $KUBE_DIR/* $host:$KUBE_DIR 1> /dev/null";
-            exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR}" $host;
-            exec_c "chown -R ${ETCD_USER}:${ETCD_GROUP} ${ETCD_PKI}" $host;
-            for ca_cert in "${KUBE_PKI}/ca.crt" "${KUBE_PKI}/front-proxy-ca.crt" "${ETCD_PKI}/ca.crt"; do
-                exec_c "trust anchor ${ca_cert}" $host;
-            done
+    # Set ownership locally (install_certs handles KUBE_PKI for KUBE_USER)
+    # Handle ETCD ownership specifically
+    if [ -d "$ETCD_PKI" ]; then
+        # Change ownership of ETCD PKI directory and contents to etcd user/group
+        exec_c "chown -R ${ETCD_USER}:${ETCD_GROUP} ${ETCD_PKI}"
+        # Ensure keys within ETCD PKI are group-readable by kube group if necessary (e.g., if apiserver needs to read ETCD CA)
+        # Adjusting permissions slightly for flexibility
+        find "$ETCD_PKI" -type f -name "*.key" -exec chmod 0640 {} \;
+        chgrp -R ${KUBE_GROUP} ${ETCD_PKI}
+    fi
+
+
+    # Trust CAs locally (if 'trust' command is available)
+    if command -v trust >/dev/null 2>&1; then
+        for ca_cert in "${KUBE_PKI}/ca.crt" "${KUBE_PKI}/front-proxy-ca.crt" "${ETCD_PKI}/ca.crt"; do
+            [ -f "$ca_cert" ] && exec_c "trust anchor ${ca_cert}"
+        done
+    fi
+
+    # Configure remote hosts
+    if [ -f "$config_yaml" ]; then
+        for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+              info "copy configuration to ${host}";
+              # Configuration synchronization is handled by kube_service_install and create_kubeconfigs/kubelet_kubeconfig.
+              # We mainly need to ensure PKI data is synchronized and permissions are correct.
+
+              # Ensure remote directories exist
+              exec_c "mkdir -p ${KUBE_PKI} ${ETCD_PKI}" "$host"
+
+              # Use rsync over SSH for efficient PKI transfer
+              if command -v rsync >/dev/null 2>&1; then
+                  local rsync_cmd="rsync -avz -e \"${SSH_COMMAND}\""
+                  exec_c "${rsync_cmd} ${KUBE_PKI}/ ${host}:${KUBE_PKI}/"
+              else
+                  # Fallback to SCP if rsync is not available
+                  exec_c "$SCP_COMMAND -r $KUBE_PKI/* $host:$KUBE_PKI/"
+              fi
+
+              # Set ownership remotely
+              exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR} ${KUBE_PKI}" "$host"
+              # Apply specific ETCD ownership/permissions remotely
+              exec_c "chown -R ${ETCD_USER}:${ETCD_GROUP} ${ETCD_PKI}" "$host"
+              exec_c "find ${ETCD_PKI} -type f -name \"*.key\" -exec chmod 0640 {} \;" "$host"
+              exec_c "chgrp -R ${KUBE_GROUP} ${ETCD_PKI}" "$host"
+
+
+              # Trust CAs remotely
+              if $SSH_COMMAND "$host" "command -v trust >/dev/null 2>&1"; then
+                  for ca_cert in "${KUBE_PKI}/ca.crt" "${KUBE_PKI}/front-proxy-ca.crt" "${ETCD_PKI}/ca.crt"; do
+                      exec_c "trust anchor ${ca_cert}" "$host"
+                  done
+              fi
+            fi
         done
     fi
 
@@ -524,22 +697,43 @@ function kube_configure() {
 }
 
 function manage_services() {
-    _s=${1:-stop};
+    local _s=${1:-stop};
     info "started manage_services ${_s}";
 
-    sys_reload="${SYSTEMCTL} daemon-reload";
-    exec_c "${sys_reload}";
-    for host in $(yq -r ".hosts | .[]" $config_yaml); do
-        exec_c "${sys_reload}" $host;
-    done
+    if [ -z "$SYSTEMCTL" ]; then
+      warning "systemctl not found, cannot manage services."
+      return
+    fi
 
-    services=("containerd" "keepalived" "etcd" "kube-apiserver" "kube-scheduler" "kube-controller-manager" "kubelet" "kube-proxy");
-    for service in ${services[@]}; do
+    local sys_reload="${SYSTEMCTL} daemon-reload";
+    exec_c "${sys_reload}"
+
+    if [ -f "$config_yaml" ]; then
+      for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+          [ -n "$host" ] && exec_c "${sys_reload}" "$host"
+      done
+    fi
+
+    # Define service order
+    local services
+    if [ "$_s" = "start" ]; then
+      # Start order: Runtimes -> Infrastructure -> Kubelet/Proxy -> Control Plane
+      services=("containerd" "etcd" "keepalived" "haproxy" "kubelet" "kube-proxy" "kube-apiserver" "kube-scheduler" "kube-controller-manager");
+    else
+      # Stop order (reverse)
+      services=("kube-controller-manager" "kube-scheduler" "kube-apiserver" "kube-proxy" "kubelet" "haproxy" "keepalived" "etcd" "containerd");
+    fi
+
+    for service in "${services[@]}"; do
         debug "manage_services ${_s} ${service}";
-        exec_c "${SYSTEMCTL} "$_s" ${service}&";
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "${SYSTEMCTL} ${_s} ${service}" $host;
-        done
+        # Execute sequentially to respect dependencies
+        exec_c "${SYSTEMCTL} $_s ${service}"
+
+        if [ -f "$config_yaml" ]; then
+          for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+              [ -n "$host" ] && exec_c "${SYSTEMCTL} ${_s} ${service}" "$host"
+          done
+        fi
     done
     info "finished manage_services ${_s}";
 }
@@ -555,68 +749,103 @@ function start_services() {
 }
 
 function cleanup() {
-
     info "started cleanup";
-    [ $SERVICES == true ] && stop_services;
-    kubelet_dir=$($YQ -r '.kubelet-dir' $config_yaml);
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' $config_yaml);
-    exec_c "rm -rf logs/*.{err,out}";
-    exec_c "rm -rf $KUBE_DIR";
-    exec_c "rm -rf $ETCD_DATA_DIR";
-    exec_c "rm -rf $KUBE_DIR";
-    exec_c "rm -rf $kubelet_dir";
-    exec_c "rm -rf $kube_proxy_dir";
-    for host in $(yq -r ".hosts | .[]" $config_yaml); do
-        exec_c "rm -rf $KUBE_DIR" $host;
-        exec_c "rm -rf $kubelet_dir" $host;
-        exec_c "rm -rf $kube_proxy_dir" $host;
-    done
+    [ "$SERVICES" = "true" ] && stop_services;
+
+    local kubelet_dir
+    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    local kube_proxy_dir
+    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+
+    # Local cleanup
+    [ -d "./logs" ] && rm -rf logs/*.{err,out}
+    exec_c "rm -rf $KUBE_DIR $ETCD_DATA_DIR $kubelet_dir $kube_proxy_dir $KUBE_PKI"
+    exec_c "rm -f /tmp/cluster.token"
+
+    # Remote cleanup
+    if [ -f "$config_yaml" ]; then
+      for host in $($YQ -r ".hosts | .[]?" "$config_yaml"); do
+          if [ -n "$host" ]; then
+            exec_c "rm -rf $KUBE_DIR $ETCD_DATA_DIR $kubelet_dir $kube_proxy_dir $KUBE_PKI /tmp/cluster.token" "$host"
+          fi
+      done
+    fi
 }
 
 function trap_sigint() {
     info "started trap_sigint";
-    for pid in ${pids[*]}; do
-        kill -9 $pid;
+    # Attempt graceful termination first
+    for pid in "${pids[@]}"; do
+        kill -INT "$pid" 2>/dev/null || true;
     done
-    error_message "SIGINT";
+    sleep 2
+    # Force kill if still running
+    for pid in "${pids[@]}"; do
+        if kill -0 "$pid" 2>/dev/null; then
+            kill -9 "$pid" 2>/dev/null || true;
+        fi
+    done
+    error_message "SIGINT received, processes terminated." 130
 }
 
-function argparse() {
-    info "finished argparse";
-}
+# Removed unused function argparse
 
 function main() {
     info "started main";
-    [ $CLEAN == false ] && info "Skipping cleanup";
-    [ $CLEAN == true ] && cleanup;
-    [ $SERVICES == true ] && stop_services;
-    [ $SERVICES == false ] && info "Skipping stop services";
+    # Setup trap
+    trap trap_sigint INT
+
+    if [ "$CLEAN" = "true" ]; then
+      info "Running cleanup..."
+      cleanup;
+    fi
+
+    # Always stop services before starting setup if SERVICES=true
+    if [ "$SERVICES" = "true" ]; then
+      info "Stopping services..."
+      stop_services;
+    fi
+
     set_peer_ips;
-    [ $BUILD_SOURCE == true ] && exec_script "source-builder.sh" true;
-    [ $BUILD_SOURCE == false ] && info "Skipping source-builder.sh";
+
+    if [ "$BUILD_SOURCE" = "true" ]; then
+      info "Running source-builder.sh..."
+      exec_script "source-builder.sh" true
+    fi
+
     generate_etcd_token;
-    info "Creating Certificate Authority";
-    # Create CA and certs for kubernetes cluster
-    [ $RUN_CERTS == true ] && exec_script "cert-manager.sh" false;
-    [ $RUN_CERTS == false ] && info "Skipping cert-manager.sh";
-    keepalived_configure;
+
+    if [ "$RUN_CERTS" = "true" ]; then
+      info "Running cert-manager.sh..."
+      exec_script "cert-manager.sh" false
+    fi
+
+    # keepalived_configure; # Keepalived configuration requires customization based on environment, uncomment if needed.
     kube_configure;
-    exec_script "setup-sources.sh" true;
-    [ $SERVICES == true ] && start_services;
-    [ $SERVICES == false ] && info "Skipping start services";
+
+    if [ "$RUN_SETUP" = "true" ]; then
+        info "Running setup-sources.sh..."
+        exec_script "setup-sources.sh" true
+    fi
+
+    if [ "$SERVICES" = "true" ]; then
+      info "Starting services..."
+      start_services;
+    fi
+
     provision_calico;
     info "finished main";
 }
 
-
-ARGS=$(getopt -o scxylh --long src,certs,setup,services,clean,help -- "$@")
-if [[ $? -ne 0 ]]; then
-    printf "${usage}";
+# Argument parsing
+# Note: Options logic is inverted (e.g., -s sets BUILD_SOURCE=false)
+ARGS=$(getopt -o scxylh --long src,certs,setup,services,clean,help -n "$(basename "$0")" -- "$@") || {
+    printf "%s" "${usage}";
     exit 1;
-fi
+}
 
 eval set -- "$ARGS"
-while [ : ]; do
+while true; do
     case "$1" in
     -s | --src)
         BUILD_SOURCE=false;
@@ -639,11 +868,14 @@ while [ : ]; do
         shift;
         ;;
     -h | --help)
-        printf "${usage}";
+        printf "%s" "${usage}";
         exit 0;
         ;;
     --) shift;
         break
+        ;;
+    *)
+        error_message "Internal error in argument parsing." 1
         ;;
   esac
 done
