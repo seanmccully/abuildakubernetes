@@ -75,15 +75,15 @@ if [ ! -f "$config_yaml" ]; then
 fi
 
 # Read configuration
-BUILD_DIR=$($YQ -r '.build-dir' $config_yaml);
-KUBE_PKI=$($YQ -r '.kube-pki' $config_yaml);
+BUILD_DIR=$($YQ -r '.buildDir' $config_yaml);
+KUBE_PKI=$($YQ -r '.kubePki' $config_yaml);
 PKI_DIR=$KUBE_PKI # Alias
-KUBE_DIR=$($YQ -r '.kube-dir' $config_yaml);
-CLUSTER_NAME=$($YQ -r '.cluster-name' $config_yaml);
-CLUSTER_IP=$($YQ -r '.cluster-ip' $config_yaml)
+KUBE_DIR=$($YQ -r '.kubeDir' $config_yaml);
+CLUSTER_NAME=$($YQ -r '.clusterName' $config_yaml);
+CLUSTER_IP=$($YQ -r '.clusterIp' $config_yaml)
 CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
-SERVICE_CIDR=$($YQ -r '.service-cidr' $config_yaml);
-CLUSTER_CIDR=$($YQ -r '.cluster-cidr' $config_yaml);
+SERVICE_CIDR=$($YQ -r '.serviceDidr' $config_yaml);
+CLUSTER_CIDR=$($YQ -r '.clusterCidr' $config_yaml);
 
 CERT_DIR="${BUILD_DIR}/certs";
 SRC_DIR="${BUILD_DIR}/src";
@@ -367,7 +367,7 @@ function set_peer_ips() {
 
     # Python script to check if IP is in CIDR
     local py_ip="import ipaddress;import sys;print(1) if ipaddress.ip_address(sys.argv[2]) in ipaddress.ip_network(sys.argv[1]) else print(0)"
-    local cidr=$($YQ -r ".control-plane-subnet" $config_yaml)
+    local cidr=$($YQ -r ".controlPlaneSubnet" $config_yaml)
 
     # Clear previous entries
     peer_ips=()

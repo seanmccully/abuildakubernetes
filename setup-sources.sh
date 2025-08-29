@@ -233,7 +233,7 @@ function setup_kubelet() {
     info "starting setup_kubelet"
     local k_env="${KUBE_DIR}/kubelet.env";
     local kubelet_dir
-    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    kubelet_dir=$($YQ -r '.kubeletDir' "$config_yaml");
     local cluster_domain
     cluster_domain=$($YQ -r '.cluster-domain' "$config_yaml");
     local kubelet_config="${kubelet_dir}/kubelet-config.yaml";
@@ -280,7 +280,7 @@ function setup_kube_proxy() {
     info "starting setup_kube_proxy"
     local kp_env="${KUBE_DIR}/kube-proxy.env";
     local kube_proxy_dir
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+    kube_proxy_dir=$($YQ -r '.kubeProxyDir' "$config_yaml");
 
     local kube_proxy_config="${kube_proxy_dir}/kube-proxy-config.yaml";
     local kube_proxy_kubeconfig="${kube_proxy_dir}/kubeconfig";

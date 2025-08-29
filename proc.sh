@@ -396,7 +396,7 @@ function create_kubeconfigs() {
 
     # Kube Proxy
     local kube_proxy_dir
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+    kube_proxy_dir=$($YQ -r '.kubeProxyDir' "$config_yaml");
     mkdir -p "$kube_proxy_dir"
     get_component_certs "kube-proxy" "kubernetes" component_crt component_key
     local kube_proxy_config="${kube_proxy_dir}/kubeconfig";
@@ -422,7 +422,7 @@ function create_kubeconfigs() {
 function create_kubelet_kubeconfig() {
     info "started create_kubelet_kubeconfig";
     local kubelet_dir
-    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    kubelet_dir=$($YQ -r '.kubeletDir' "$config_yaml");
     local ca_cert="${PKI_DIR}/ca.crt"
     mkdir -p "$kubelet_dir"
 
@@ -472,10 +472,10 @@ function kube_service_install() {
     info "started kube_service_install";
 
     local kubelet_dir
-    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    kubelet_dir=$($YQ -r '.kubeletDir' "$config_yaml");
     local kubelet_config="${kubelet_dir}/kubelet-config.yaml";
     local kube_proxy_dir
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+    kube_proxy_dir=$($YQ -r '.kubeProxyDir' "$config_yaml");
     local kube_proxy_config="${kube_proxy_dir}/kube-proxy-config.yaml";
 
     if [ ! -d "$SERVICE_DIR" ] || [ ! -d "$CONF_DIR" ]; then
@@ -753,9 +753,9 @@ function cleanup() {
     [ "$SERVICES" = "true" ] && stop_services;
 
     local kubelet_dir
-    kubelet_dir=$($YQ -r '.kubelet-dir' "$config_yaml");
+    kubelet_dir=$($YQ -r '.kubeletDir' "$config_yaml");
     local kube_proxy_dir
-    kube_proxy_dir=$($YQ -r '.kube-proxy-dir' "$config_yaml");
+    kube_proxy_dir=$($YQ -r '.kubeProxyDir' "$config_yaml");
 
     # Local cleanup
     [ -d "./logs" ] && rm -rf logs/*.{err,out}

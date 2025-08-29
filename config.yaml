@@ -1,7 +1,7 @@
 hosts: # Hosts to build the kubernetes cluster, all hosts are considered control plane nodes, TODO: Include workers only
   - host1
   - host2
-controlPlane-subnet: 172.12.12.0/24 # Control Plane CIDR 
+controlPlaneSubnet: 172.12.12.0/24 # Control Plane CIDR 
 cniBackend: 'calico-etcd'
 clusterIp: 172.12.12.125 # VRRP VIP for kubernetes api server, needs to be in same CIDR as control plane subnet
 serviceCidr: 10.0.0.0/20 # Service CIDR to use for Kubernetes services
