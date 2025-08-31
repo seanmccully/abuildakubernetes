@@ -22,9 +22,10 @@ function clone_repo() {
 # Use pushd/popd as exec_c runs in a subshell
 function go_build() {
     info "starting go_build";
+    exec_c "git checkout release-branch.go1.25"
     pushd src/ >/dev/null || { error_message "Failed to change directory to src" 1; return 1; }
-    exec_c "./clean.bash"
-    exec_c "./all.bash"
+    exec_c "./clean.bash" || true;
+    exec_c "./make.bash"
     popd >/dev/null
 
     local goroot
@@ -105,8 +106,8 @@ function runc_build() {
     exec_c "make clean"
     exec_c "make all"
     exec_c "install -m755 ./runc /usr/local/bin/runc"
-    exec_c "install -m755 contrib/cmd/recvtty/recvtty /usr/local/bin/recvtty"
-    exec_c "install -m755 contrib/cmd/seccompagent/seccompagent /usr/local/bin/seccompagent"
+    exec_c "install -m755 contrib/cmd/memfd-bind/memfd-bind /usr/local/bin/memfd-bind"
+    exec_c "install -m755 contrib/completions/bash/runc /usr/share/bash-completion/completions/"
 }
 
 function cri_tools_build() {
@@ -248,8 +249,9 @@ function calico_build() {
     popd >/dev/null
 
     pushd ./manifests >/dev/null || { error_message "Failed to change directory to ./manifests" 1; return 1; }
-    if [ -x "/usr/local/bin/helm" ]; then
-      HELM="/usr/local/bin/helm" ./generate.sh;
+    HELM=$(exec_c "command -c helm");
+    if [ -x "$HELM" ]; then
+      YQ="${YQ}" HELM="${HELM}" ./generate.sh;
     else
       warning "Helm not found, skipping manifest generation."
     fi

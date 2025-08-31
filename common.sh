@@ -27,7 +27,7 @@ VERBOSE=${VERBOSE:-1};
 BUILD_SOURCE=${BUILD_SOURCE:-true};
 RUN_CERTS=${RUN_CERTS:-true};
 RUN_SETUP=${RUN_SETUP:-true};
-SERVICES=${SERVICES:-true};
+SERVICES=${SERVICES:-false};
 CLEAN=${CLEAN:-false};
 
 usage="$(basename "$0") [-h] [-s -c -x -y -l]

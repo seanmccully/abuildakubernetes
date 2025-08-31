@@ -1,16 +1,16 @@
-hosts: # Hosts to build the kubernetes cluster, all hosts are considered control plane nodes, TODO: Include workers only
-  - host1
-  - host2
-controlPlaneSubnet: 172.12.12.0/24 # Control Plane CIDR 
+hosts:
+  - bodes
+  - barnard
+controlPlaneSubnet: 172.12.12.0/24
 cniBackend: 'calico-etcd'
-clusterIp: 172.12.12.125 # VRRP VIP for kubernetes api server, needs to be in same CIDR as control plane subnet
-serviceCidr: 10.0.0.0/20 # Service CIDR to use for Kubernetes services
-clusterCidr: 10.3.0.0/16 # Cluster CIDR to use for Kubernetes services
-clusterDomain: local.net # Kubernetes DNS domain
-clusterName: abuildakubernetes # Kubernetes cluster name
-buildDir: /opt/cluster # Where to build the sources and certificate authority
-kubeDir: /etc/kubernetes # Where to install the kubernetes services
-kubePki: /etc/kubernetes/pki # Where to install the kubernetes certs
-kubeletDir: /var/lib/kubelet # Where to install kubelet services
-kubeProxyDir: /var/lib/kube-proxy # Where to install the kube-proxy services
-kubeLogDir: /var/log/kubernetes # Kubernetes LOG dir
+clusterIp: 172.12.12.125
+serviceCidr: 10.0.0.0/20
+clusterCidr: 10.3.0.0/16
+clusterDomain: local.silverstars.io
+clusterName: SilverStars
+buildDir: /opt/cluster
+kubeDir: /etc/kubernetes
+kubePki: /etc/kubernetes/pki
+kubeletDir: /var/lib/kubelet
+kubeProxyDir: /var/lib/kube-proxy
+kubeLogDir: /var/log/kubernetes
