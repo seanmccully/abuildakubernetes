@@ -94,11 +94,8 @@ function setup_etcd_conf() {
     local peer_urls="https://${peer_ips[$hostname]}:2380";
     local client_urls="https://${peer_ips[$hostname]}:2379";
 
-    local cluster="";
-    for host in "${!peer_ips[@]}"; do
-        cluster+="$host=https://${peer_ips[$host]}:2380,";
-    done
-    cluster=${cluster::-1};
+    local cluster=etcd_cluster_ips;
+
 
     # Use $YQ -i (in-place) instead of -ir
     $YQ -i ".name=\"${hostname}\"" "$etcd_yml";
@@ -232,10 +229,7 @@ function setup_kube_scheduler() {
 function setup_kubelet() {
     info "starting setup_kubelet"
     local k_env="${KUBE_DIR}/kubelet.env";
-    local kubelet_dir
-    kubelet_dir=$($YQ -r '.kubeletDir' "$config_yaml");
-    local cluster_domain
-    cluster_domain=$($YQ -r '.cluster-domain' "$config_yaml");
+
     local kubelet_config="${kubelet_dir}/kubelet-config.yaml";
 
     mkdir -p "$kubelet_dir";
@@ -254,8 +248,8 @@ function setup_kubelet() {
     dns_ip=$(${python} -c "import ipaddress;print(list(ipaddress.IPv4Network('${SERVICE_CIDR}'))[10])")
 
     $SED -i "s/IP_ADDR/${ip_addr}/g" "$kubelet_config";
-    $SED -i "s~KUBELET_DIR~${kubelet_dir}~g" "$kubelet_config";
-    $SED -i "s/CLUSTER_DOMAIN/${cluster_domain}/g" "$kubelet_config";
+    $SED -i "s~KUBELET_DIR~${KUBELET_DIR}~g" "$kubelet_config";
+    $SED -i "s/CLUSTER_DOMAIN/${CLUSTER_DOMAIN}/g" "$kubelet_config";
     $SED -i "s/CLUSTER_DNS/${dns_ip}/g" "$kubelet_config";
 
     # Detect containerd socket, with fallback

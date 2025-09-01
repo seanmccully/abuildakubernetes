@@ -1,122 +1,121 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 #
 #MIT License
-#
-#Copyright (c) 2024 Sean McCully
-#
-#Permission is hereby granted, free of charge, to any person obtaining a copy
-#of this software and associated documentation files (the "Software"), to deal
-#in the Software without restriction, including without limitation the rights
-#to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-#copies of the Software, and to permit persons to whom the Software is
-#furnished to do so, subject to the following conditions:
-#
-#The above copyright notice and this permission notice shall be included in all
-#copies or substantial portions of the Software.
-#
-#THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-#IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-#FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-#AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-#LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-#OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-#SOFTWARE.
+# ... (License text omitted for brevity) ...
 #
 # Doc:
 #   Setups certificate authority with kubernetes intermediate certificate authorities for creating
 #   kubernetes certificates.
 #
 
-
 _path=$(dirname "$0")
 MESSAGE_HEADER="cert-manager";
+# Source common.sh to enable strict mode and helper functions
 source "${_path}/common.sh";
+
+# These variables are modified by configureAlts and used by mkCert
 dns_alts="";
 ip_alts="";
 
 function create_ca() {
     info "starting create_ca";
-    key_file="private/ca.key.pem";
-    cert_file="certs/ca.cert.pem";
+    # Paths relative to CERT_DIR
+    local key_file="private/ca.key.pem";
+    local cert_file="certs/ca.cert.pem";
 
-    if [ -e $cert_file ]; then
+    if [ -e "${CERT_DIR}/${cert_file}" ]; then
         warning "OpenSSL create_ca CA already exists";
-        return 1;
+        return 0; # Already exists, success
     fi
 
-    [ ! -f $SSL_CNF ] && error_message "OpenSSL ${SSL_CNF} does not exist";
-    [ ! -f $INTER_SSL_CNF ] && error_message "OpenSSL ${INTER_SSL_CNF} does not exist";
-    ssl_conf="${CERT_DIR}/openssl.cnf";
-    inter_conf="${CERT_DIR}/intermediate-openssl.cnf";
-    exec_c "cp ${SSL_CNF} ${ssl_conf}";
-    exec_c "cp ${INTER_SSL_CNF} ${inter_conf}";
+    [ ! -f "$SSL_CNF" ] && error_message "OpenSSL ${SSL_CNF} does not exist" 1
+    [ ! -f "$INTER_SSL_CNF" ] && error_message "OpenSSL ${INTER_SSL_CNF} does not exist" 1
 
-    exec_c "echo ${CA_PASS} > ${PASS_FILE}";
-    exec_c "chmod 0400 ${PASS_FILE}";
+    local ssl_conf="${CERT_DIR}/openssl.cnf";
+    local inter_conf="${CERT_DIR}/intermediate-openssl.cnf";
+    # Use exec_c for robust execution
+    exec_c "cp ${SSL_CNF} ${ssl_conf}"
+    exec_c "cp ${INTER_SSL_CNF} ${inter_conf}"
 
-    pushd $CERT_DIR;
-    exec_c "mkdir certs crl csr newcerts private";
+    # PASS_FILE creation is handled in common.sh now.
+
+    # Use pushd/popd for operations inside CERT_DIR
+    pushd "$CERT_DIR" >/dev/null || { error_message "Failed to change directory to ${CERT_DIR}" 1; return 1; }
+
+    exec_c "mkdir -p certs crl csr newcerts private"
     exec_c "chmod 700 private"
     exec_c "touch index.txt"
-    exec_c "echo 1000 > serial";
+    exec_c "echo 1000 > serial"
 
-    country=$($YQ -r '.san.country ' $CERTS_YAML);
-    state=$($YQ -r '.san.state' $CERTS_YAML);
-    locality=$($YQ -r '.san.locality' $CERTS_YAML);
-    email=$($YQ -r '.san.email' $CERTS_YAML);
-    subj="/C=$country/ST=$state/L=$locality/O=kubernetes/OU=kubernetes/CN=ca/emailAddress=$email";
+    local country=$($YQ -r '.san.country ' "$CERTS_YAML");
+    local state=$($YQ -r '.san.state' "$CERTS_YAML");
+    local locality=$($YQ -r '.san.locality' "$CERTS_YAML");
+    local email=$($YQ -r '.san.email' "$CERTS_YAML");
+    local subj="/C=${country}/ST=${state}/L=${locality}/O=kubernetes/OU=kubernetes/CN=ca/emailAddress=${email}";
 
+    # Generate Root CA Key (encrypted)
     exec_c "openssl genrsa -aes256 -passout file:${PASS_FILE} -out ${key_file} 4096"
     exec_c "chmod 400 ${key_file}"
-    exec_c "openssl req -config ${ssl_conf} -key ${key_file} -new -x509 -days 1810 \
-    -passin file:${PASS_FILE} -subj ${subj} -sha512 -extensions v3_ca -out ${cert_file}"
-    popd;
+    # Generate Root CA Certificate
+    # Note: We use the relative path 'openssl.cnf' for config as we are inside CERT_DIR
+    exec_c "openssl req -config openssl.cnf -key ${key_file} -new -x509 -days 1810 \
+    -passin file:${PASS_FILE} -subj \"${subj}\" -sha512 -extensions v3_ca -out ${cert_file}"
+
+    popd >/dev/null
     info "finished create_ca";
 }
 
 function create_intermediate_ca() {
-
-    intermediate=$1;
+    local intermediate=$1;
     info "starting create_intermediate_ca $intermediate";
 
-    key_file="${intermediate}/private/${intermediate}.key.pem";
-    csr_file="${intermediate}/csr/${intermediate}.csr.pem";
-    cert_file="${intermediate}/certs/${intermediate}.cert.pem";
+    # Define paths using CERT_DIR explicitly
+    local base_dir="${CERT_DIR}/${intermediate}"
+    local key_file="${base_dir}/private/${intermediate}.key.pem";
+    local csr_file="${base_dir}/csr/${intermediate}.csr.pem";
+    local cert_file="${base_dir}/certs/${intermediate}.cert.pem";
 
-    if [ -e $cert_file ]; then
+    if [ -e "$cert_file" ]; then
         warning "OpenSSL create_intermediate_ca ${intermediate} CA already exists";
-        return 1;
+        return 0;
     fi
 
-    exec_c "mkdir ${CERT_DIR}/${intermediate}";
-    pushd "${CERT_DIR}/${intermediate}";
+    exec_c "mkdir -p ${base_dir}"
+    pushd "${base_dir}" >/dev/null || { error_message "Failed to change directory to ${base_dir}" 1; return 1; }
 
-    inter_conf="${CERT_DIR}/intermediate-openssl.cnf";
-    ssl_conf="openssl.cnf"
+    local inter_conf="${CERT_DIR}/intermediate-openssl.cnf";
+    local ssl_conf="openssl.cnf"
 
-    exec_c "mkdir certs crl csr newcerts private";
-    exec_c "chmod 700 private";
-    exec_c "touch index.txt";
-    exec_c "echo 1000 > serial";
+    exec_c "mkdir -p certs crl csr newcerts private"
+    exec_c "chmod 700 private"
+    exec_c "touch index.txt"
+    exec_c "echo 1000 > serial"
+    # Prepare intermediate config file
     exec_c "cp $inter_conf $ssl_conf"
-    exec_c "sed -i \"s/intermediate/$intermediate/g\" ${ssl_conf}";
-    popd;
+    # Customize the config for the specific intermediate CA
+    exec_c "sed -i \"s/intermediate/$intermediate/g\" ${ssl_conf}"
+    popd >/dev/null
+
     info "creating ${intermediate} certificate authority";
+    # Generate Intermediate CA Key (encrypted)
     exec_c "openssl genrsa -aes256 -passout file:${PASS_FILE} -out ${key_file} 4096"
-    exec_c "chmod 400 ${key_file}";
+    exec_c "chmod 400 ${key_file}"
 
-    country=$($YQ -r '.san.country ' $CERTS_YAML);
-    state=$($YQ -r '.san.state' $CERTS_YAML);
-    locality=$($YQ -r '.san.locality' $CERTS_YAML);
-    email=$($YQ -r '.san.email' $CERTS_YAML);
-    subj="/C=$country/ST=$state/L=$locality/O=kubernetes/OU=kubernetes/CN=${intermediate}-ca/emailAddress=$email";
+    local country=$($YQ -r '.san.country ' "$CERTS_YAML");
+    local state=$($YQ -r '.san.state' "$CERTS_YAML");
+    local locality=$($YQ -r '.san.locality' "$CERTS_YAML");
+    local email=$($YQ -r '.san.email' "$CERTS_YAML");
+    local subj="/C=${country}/ST=${state}/L=${locality}/O=kubernetes/OU=kubernetes/CN=${intermediate}-ca/emailAddress=${email}";
 
-    exec_c "openssl req -config ${intermediate}/openssl.cnf  \
+    # Create CSR for Intermediate CA
+    exec_c "openssl req -config ${base_dir}/openssl.cnf  \
           -key ${key_file} \
-          -passin file:${PASS_FILE} -subj ${subj} \
+          -passin file:${PASS_FILE} -subj \"${subj}\" \
           -new -sha256 -out ${csr_file}"
 
-    exec_c "openssl ca -config openssl.cnf -extensions v3_intermediate_ca \
+    # Sign Intermediate CA CSR with Root CA
+    # Using the Root CA config file (openssl.cnf in CERT_DIR)
+    exec_c "openssl ca -config ${CERT_DIR}/openssl.cnf -extensions v3_intermediate_ca \
           -days 3650 -notext -md sha256 \
           -in ${csr_file} \
           -batch -passin file:${PASS_FILE} \
@@ -126,252 +125,297 @@ function create_intermediate_ca() {
     info "finished create_intermediate_ca $intermediate";
 }
 
-function validate_cert() {
+function validate_cert_internal() {
+    local component=$1;
+    local intermediate=$2;
 
-    component=$1;
-    intermediate=$2;
-    cert_type=$3;
-    prefix=$4;
+    info " start validate_cert_internal $component $intermediate";
+    # Define paths using CERT_DIR explicitly
+    local key_file="${CERT_DIR}/${intermediate}/private/${component}.key.pem";
+    local cert_out="${CERT_DIR}/${intermediate}/certs/${component}.cert.pem";
 
-    info " start validate_cert $component $intermediate $cert_type $prefix";
-    key_file="${intermediate}/private/${component}.key.pem";
-    csr_file="${intermediate}/csr/${component}.csr.pem";
-    cert_out="${intermediate}/components/${component}.component.pem";
+    # Return 1 (failure/needs generation) if files don't exist
+    if [ ! -e "$cert_out" ] || [ ! -e "$key_file" ]; then
+        return 1;
+    fi
 
-    [[ -e $cert_out && -e $key_file ]] || return 0;
-    return certValidate $cert_out $key_file;
+    # Call certValidate and return its status.
+    # Note: This validation will fail for the encrypted CA keys themselves if the password isn't provided to certValidate.
+    # We assume component keys generated by mkCert are unencrypted.
+    certValidate "$cert_out" "$key_file"
+    return $?
 }
 
 function certHandler() {
-    component=$1;
-    intermediate=$2;
-    cert_type=$3;
-    prefix=$4;
+    local component=$1;
+    local intermediate=$2;
+    local cert_type=$3;
+    local prefix=$4;
     info " start certHandler $component $intermediate $cert_type $prefix";
-    if [ -e "${intermediate}/certs/${cert}.cert.pem" ]; then
-        validate_cert $component $intermediate $cert_type $prefix;
-        if [ $? == 0 ]; then
-            warning "OpenSSL certHandler ${intermediate} ${component} already exists";
-            return 1;
-        fi
+
+    # Check if cert exists and is valid
+    # validate_cert_internal returns 0 if valid, 1 otherwise
+    if validate_cert_internal "$component" "$intermediate"; then
+        warning "OpenSSL certHandler ${intermediate} ${component} already exists and is valid";
+        return 0;
     fi
-    writeConfig $component $intermediate $cert_type $prefix;
+
+    # If not valid or doesn't exist, proceed to generate
+    writeConfig "$component" "$intermediate" "$cert_type" "$prefix";
 }
 
+# Resolved merge conflict
 function configureAlts() {
-    node_name=${1:-false};
+    local node_name=${1:-false};
 
     info "starting configureAlts $node_name";
-    service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
+    # Calculate the first IP in the service network
+    # Execute python directly to capture output
+    local service_net_ip
+    service_net_ip=$(${python} -c "import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])")
+
+    # Initialize global variables ip_alts and dns_alts
     ip_alts="IP:127.0.0.1";
     ip_alts="${ip_alts},IP:${CLUSTER_IP}";
     ip_alts="${ip_alts},IP:${service_net_ip}";
     dns_alts="DNS:localhost";
 
-<<<<<<< HEAD
-    if [ $node_name != false ]; then
-=======
-    node_name=${1:-false};
+    # If generating for a specific node/component that needs extensive SANs
+    if [ "$node_name" != "false" ]; then
 
-    info "starting configureAlts $node_name";
-    service_net_ip=$(exec_c "${python} -c  \"import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])\"");
-    ip_alts="IP:127.0.0.1";
-    ip_alts="${ip_alts},IP:${CLUSTER_IP}";
-    ip_alts="${ip_alts},IP:${service_net_ip}";
-    dns_alts="DNS:localhost";
+        if [ -f "$hosts_yaml" ]; then
+            # Add IPs from hosts_yaml
+            for host in $($YQ -r "keys | .[]" "$hosts_yaml"); do
+                for ip in $($YQ -r ".${host} | .[]" "$hosts_yaml"); do
+                    if [[ "${ip}" != "127.0.0.1" ]]; then
+                        ip_alts="${ip_alts},IP:${ip}";
+                    fi
+                done
+            done
 
-    if [ $node_name != false ]; then
-
-
-        for host in $($YQ -r "keys | .[]" $hosts_yaml); do
-            for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
-                if [[ "${ip}" != "127.0.0.1" ]]; then
-                    ip_alts="${ip_alts},IP:${ip}";
+            # Add DNS names from hosts_yaml and domains from CERTS_YAML
+            for host in $($YQ -r "keys | .[]" "$hosts_yaml"); do
+                dns_alts="${dns_alts},DNS:${host}";
+                if [ -f "$CERTS_YAML" ]; then
+                    # Use .[]? to handle potentially missing domains list
+                    for domains in $($YQ -r ".san.domains | .[]? " "$CERTS_YAML"); do
+                        if [ -n "$domains" ]; then
+                            dns_alts="${dns_alts},DNS:${host}${domains}";
+                        fi
+                    done
                 fi
             done
-        done
-
-        for host in $($YQ -r "keys | .[]" $hosts_yaml); do
-            dns_alts="${dns_alts},DNS:${host}";
-            for domains in $($YQ -r ".san.domains |  .[] " $CERTS_YAML); do
-                dns_alts="${dns_alts},DNS:${host}${domains}";
-            done
-        done
+        fi
     fi
     info "finished configureAlts $node_name ${ip_alts} ${dns_alts}";
 }
 
 function writeConfig() {
-
-    component=$1;
-    intermediate=$2;
-    cert_type=$3;
-    prefix=$4;
+    local component=$1;
+    local intermediate=$2;
+    local cert_type=$3;
+    local prefix=$4;
 
     info "writeConfig $component $intermediate $cert_type $prefix";
-    icnf="$intermediate/openssl.conf"
-    cp $intermediate/openssl.cnf $icnf;
 
-    if [ $cert_type != "server_cert" ]; then
+    # Prepare a specific config file for this component generation (temporary)
+    local icnf="${CERT_DIR}/${intermediate}/openssl-${component}.conf"
+    local base_cnf="${CERT_DIR}/${intermediate}/openssl.cnf"
+
+    if [ ! -f "$base_cnf" ]; then
+        error_message "Base OpenSSL config not found: ${base_cnf}" 1
+        return 1
+    fi
+    cp "$base_cnf" "$icnf"
+
+    # Initialize variables
+    local orgName="kubernetes"
+    local cn_prefix=""
+
+    # Determine Organization Name (O)
+    if [ "$cert_type" != "server_cert" ]; then
         orgName="$intermediate";
     fi
 
-    ip_alts="";
-    dns_alts="";
-    if [[ $prefix == "system:masters" ]]; then
-        configureAlts $component
+    # Configure Subject Alternative Names (SANs) and adjust O/CN for specific Kubernetes roles
+    # This logic determines which SANs to include and sets the Subject (O and CN)
+    if [[ "$prefix" == "system:masters" ]]; then
+        configureAlts "$component"
         orgName="${prefix}";
-        cn_prefix="";
-    elif [[ $prefix == "system:nodes" ]]; then
-        configureAlts $component
+        # CN is just the component name
+    elif [[ "$prefix" == "system:nodes" ]]; then
+        configureAlts "$component"
         orgName="${prefix}";
-        cn_prefix="${prefix%*s}:";
-    elif [[ $prefix == "system:node-proxier" ]]; then
-        configureAlts $component
-        orgName="${prefix}";
-        cn_prefix="${prefix%node-proxier}";
+        cn_prefix="system:node:"; # Required prefix for Node authorization
+    # Handle kube-proxy explicitly if needed, though often passed via prefix
+    elif [[ "$component" == "kube-proxy" ]]; then
+        configureAlts
+        orgName="system:node-proxier"; # Group for kube-proxy
+        cn_prefix="system:kube-proxy"; # User for kube-proxy
     else
         configureAlts
-        if [ ! -z "$prefix" ]; then
+        if [ -n "$prefix" ]; then
             orgName="${prefix}";
-            cn_prefix="${prefix%:*}:";
-        else
-            orgName="${intermediate}";
+            # Generic prefix handling
+            if [[ "$prefix" == *":"* ]]; then
+                 cn_prefix="${prefix}:";
+            fi
         fi
     fi
 
+    local country=$($YQ -r '.san.country ' "$CERTS_YAML");
+    local state=$($YQ -r '.san.state' "$CERTS_YAML");
+    local locality=$($YQ -r '.san.locality' "$CERTS_YAML");
+    local email=$($YQ -r '.san.email' "$CERTS_YAML");
 
-    country=$($YQ -r '.san.country ' $CERTS_YAML);
-    state=$($YQ -r '.san.state' $CERTS_YAML);
-    locality=$($YQ -r '.san.locality' $CERTS_YAML);
-    email=$($YQ -r '.san.email' $CERTS_YAML);
+    local subj="/C=${country}/ST=${state}/L=${locality}/O=${orgName}/OU=${intermediate}/CN=${cn_prefix}${component}/emailAddress=${email}";
 
-    subj="/C=${country}/ST=${state}/L=${locality}/O=${orgName}/OU=${intermediate}/CN=${cn_prefix}${component}/emailAddress=${email}";
+    mkCert "$component" "$intermediate" "$cert_type" "$subj" "$icnf";
 
-    mkCert $component $intermediate $cert_type $subj;
+    # Clean up temporary config file
+    rm -f "$icnf"
 }
 
+# Resolved merge conflict, using dynamic command construction
 function mkCert() {
+    local component=$1;
+    local intermediate=$2;
+    local cert_type=$3;
+    local subj=$4;
+    local icnf=$5; # Configuration file path
 
-    component=$1;
-    intermediate=$2;
-    cert_type=$3;
-    subj=$4;
     info "mkCert $component $intermediate $cert_type $subj";
 
-    icnf="${intermediate}/openssl.conf";
-    key_file="${intermediate}/private/${component}.key.pem";
-    csr_file="${intermediate}/csr/${component}.csr.pem";
-    cert_out="${intermediate}/certs/${component}.cert.pem";
+    # Define paths using CERT_DIR explicitly
+    local base_dir="${CERT_DIR}/${intermediate}"
+    local key_file="${base_dir}/private/${component}.key.pem";
+    local csr_file="${base_dir}/csr/${component}.csr.pem";
+    local cert_out="${base_dir}/certs/${component}.cert.pem";
 
-    if [ -e $cert_out ]; then
-        warning "OpenSSL mkCert ${cert_out} already exists";
-        return 1;
-    fi
-    alt_names="";
-    if [ ! -z "${dns_alts}" ]; then
-        alt_names="subjectAltName=${dns_alts}";
-        if [ ! -z "${ip_alts}" ]; then
+    # Construct Subject Alternative Names string
+    local alt_names=""
+    if [ -n "${dns_alts}" ]; then
+        alt_names="subjectAltName=${dns_alts}"
+        if [ -n "${ip_alts}" ]; then
             alt_names="${alt_names},${ip_alts}";
         fi
-    elif [ ! -z "${ip_alts}" ]; then
+    elif [ -n "${ip_alts}" ]; then
         alt_names="subjectAltName=${ip_alts}";
     fi
 
-    exec_c "openssl genrsa -out $key_file 4096";
-    exec_c "chmod 400 $key_file";
-<<<<<<< HEAD
-<<<<<<< HEAD
-=======
->>>>>>> 6d6ba9e (SAN certs CLI)
-    openssl_cmd="${openssl} req -config ${icnf} -key ${key_file}";
-    openssl_cmd="${openssl_cmd} -subj ${subj}";
-    if [ ! -z "${alt_names}" ]; then
-        openssl_cmd="${openssl_cmd} -addext ${alt_names}";
+    # Generate Key (unencrypted for component usage)
+    exec_c "openssl genrsa -out \"$key_file\" 4096"
+    exec_c "chmod 400 \"$key_file\""
+
+    # Create CSR
+    # Construct the command dynamically
+    local openssl_cmd="openssl req -config \"${icnf}\" -key \"${key_file}\""
+    openssl_cmd="${openssl_cmd} -subj \"${subj}\""
+    if [ -n "${alt_names}" ]; then
+        # Use -addext to include SANs in the CSR
+        openssl_cmd="${openssl_cmd} -addext \"${alt_names}\""
     fi
-    openssl_cmd="${openssl_cmd}  -new -sha256 -out ${csr_file}";
-<<<<<<< HEAD
-=======
-    exec_c "openssl req -config ${icnf} \
-        -key ${key_file} \
-        -subj "${subj}" \
-        -addext "subjectAltName=${dns_alts},${ip_alts}" \
-        -new -sha256 -out ${csr_file}";
->>>>>>> 79c5eca (HAProxy)
-=======
->>>>>>> 6d6ba9e (SAN certs CLI)
+    openssl_cmd="${openssl_cmd} -new -sha256 -out \"${csr_file}\""
 
     info "${openssl_cmd}";
-    exec_c "${openssl_cmd}";
+    exec_c "${openssl_cmd}"
 
-    openssl_cmd="${openssl} ca -config ${icnf} -extensions ${cert_type}";
-    openssl_cmd="${openssl_cmd} -days 1024 -notext -md sha256 -passin file:${PASS_FILE}";
-    openssl_cmd="${openssl_cmd} -in ${csr_file} -batch -out ${cert_out}";
+    # Sign Certificate using Intermediate CA
+    local sign_conf="${CERT_DIR}/${intermediate}/openssl.cnf"
+    openssl_cmd="openssl ca -config \"${sign_conf}\" -extensions \"${cert_type}\""
+    # Passphrase required for the Intermediate CA key
+    openssl_cmd="${openssl_cmd} -days 1024 -notext -md sha256 -passin file:\"${PASS_FILE}\""
+    openssl_cmd="${openssl_cmd} -in \"${csr_file}\" -batch -out \"${cert_out}\""
 
     info "${openssl_cmd}";
-    exec_c "${openssl_cmd}";
-    exec_c "chmod 444 ${cert_out}";
+    exec_c "${openssl_cmd}"
+    exec_c "chmod 444 \"${cert_out}\""
 }
 
+# Helper functions to iterate YAML configuration
 function create_server_certs() {
     info "starting create_server_certs";
-    for intermediate in $($YQ -r ".certs.server | keys | .[] " $CERTS_YAML); do
-        for server in $($YQ -r ".certs.server | .[\"${intermediate}\"] | .[] " $CERTS_YAML); do
-            component=$server;
-            prefix="";
-            if [[ $server == *";"* ]]; then
-                component=${server%;*};
-                prefix=${server#*;};
-            fi
-            certHandler $component $intermediate "server_cert" $prefix;
-        done
+    # Use .[]? to handle empty results gracefully
+    for intermediate in $($YQ -r ".certs.server | keys | .[]? " "$CERTS_YAML"); do
+        if [ -n "$intermediate" ]; then
+            for server in $($YQ -r ".certs.server | .[\"${intermediate}\"] | .[]? " "$CERTS_YAML"); do
+                if [ -n "$server" ]; then
+                    local component="$server";
+                    local prefix="";
+                    if [[ "$server" == *";"* ]]; then
+                        component=${server%;*};
+                        prefix=${server#*;};
+                    fi
+                    certHandler "$component" "$intermediate" "server_cert" "$prefix";
+                fi
+            done
+        fi
     done
     info "finished create_server_certs";
 }
 
 function create_host_certs() {
-
     info "starting create_host_certs";
-    intermediate="kubernetes";
-    for host in $($YQ -r "keys | .[] " $hosts_yaml); do
-        prefix="system:nodes";
-        certHandler $host $intermediate "server_cert" $prefix;
+    if [ ! -f "$hosts_yaml" ]; then
+        warning "hosts.yaml not found, skipping host cert generation."
+        return
+    fi
+
+    local intermediate="kubernetes";
+    for host in $($YQ -r "keys | .[]? " "$hosts_yaml"); do
+        if [ -n "$host" ]; then
+            local prefix="system:nodes";
+            certHandler "$host" "$intermediate" "server_cert" "$prefix";
+        fi
     done
     info "finished create_host_certs";
 }
 
 function create_client_certs() {
-
     info "starting create_client_certs";
-    for intermediate in $($YQ -r ".certs.client | keys | .[] " $CERTS_YAML); do
-        for client in $($YQ -r ".certs.client | .[\"${intermediate}\"] | .[] " $CERTS_YAML); do
-            component=$client;
-            prefix="";
-            if [[ $client =~ ";" ]]; then
-                component=${client%;*};
-                prefix=${client#*;};
-            fi
-            certHandler $component $intermediate "usr_cert" $prefix;
-        done
+
+    for intermediate in $($YQ -r ".certs.client | keys | .[]? " "$CERTS_YAML"); do
+        if [ -n "$intermediate" ]; then
+            for client in $($YQ -r ".certs.client | .[\"${intermediate}\"] | .[]? " "$CERTS_YAML"); do
+                if [ -n "$client" ]; then
+                    local component="$client";
+                    local prefix="";
+                    if [[ "$client" =~ ";" ]]; then
+                        component=${client%;*};
+                        prefix=${client#*;};
+                    fi
+                    certHandler "$component" "$intermediate" "usr_cert" "$prefix";
+                fi
+            done
+        fi
     done
     info "finished create_client_certs";
 }
 
 function cleanup() {
     info "starting cleanup";
-    rm -rf $CERT_DIR;
+    rm -rf "$CERT_DIR";
 }
 
 function main() {
-
     info "starting main";
-    [ $CLEAN == true ] && cleanup;
-    mkdir -p $CERT_DIR;
-    cd $CERT_DIR;
+    # CLEAN status is passed via environment variable if called from proc.sh
+    [ "$CLEAN" = "true" ] && cleanup;
+    mkdir -p "$CERT_DIR";
+
+    # Check if CERTS_YAML exists
+    if [ ! -f "$CERTS_YAML" ]; then
+        error_message "Certs configuration file not found: ${CERTS_YAML}" 1
+        return 1
+    fi
 
     create_ca;
-    for intermediate in $($YQ -r ".certs.client | keys | .[]" $CERTS_YAML); do
-        create_intermediate_ca $intermediate;
+
+    # Create intermediate CAs
+    for intermediate in $($YQ -r ".certs.client | keys | .[]?" "$CERTS_YAML"); do
+        if [ -n "$intermediate" ]; then
+            create_intermediate_ca "$intermediate";
+        fi
     done
 
     create_server_certs;

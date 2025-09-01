@@ -576,7 +576,7 @@ function remote_cleanup() {
               exec_c "$SCP_COMMAND $host:/tmp/$_script.out ./logs/${host}.$_script.out"
             fi
             # Clean up remote files
-            exec_c "rm -f /tmp/common.sh /tmp/config.yaml /tmp/hosts.yaml /tmp/${_script} /tmp/${_script}.err /tmp/${_script}.out" "$host"
+            exec_c "rm -f /tmp/common.sh /tmp/config.yaml /tmp/hosts.yaml /tmp/${_script} /tmp/${_script}.out" "$host"
           fi
       done
     fi

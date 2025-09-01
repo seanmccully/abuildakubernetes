@@ -24,7 +24,7 @@ declare -A peer_ips;
 # Initialize variables with defaults if not set
 DEBUG=${DEBUG:-0};
 VERBOSE=${VERBOSE:-1};
-BUILD_SOURCE=${BUILD_SOURCE:-true};
+BUILD_SOURCE=${BUILD_SOURCE:-false};
 RUN_CERTS=${RUN_CERTS:-true};
 RUN_SETUP=${RUN_SETUP:-true};
 SERVICES=${SERVICES:-false};
@@ -84,6 +84,8 @@ CLUSTER_IP=$($YQ -r '.clusterIp' $config_yaml)
 CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
 SERVICE_CIDR=$($YQ -r '.serviceDidr' $config_yaml);
 CLUSTER_CIDR=$($YQ -r '.clusterCidr' $config_yaml);
+CLUSTER_DOMAIN=$($YQ -r '.clusterDomain' $config_yaml);
+KUBELET_DIR=$($YQ -r '.kubeletDir' "$config_yaml");
 
 CERT_DIR="${BUILD_DIR}/certs";
 SRC_DIR="${BUILD_DIR}/src";
@@ -373,7 +375,7 @@ function set_peer_ips() {
     peer_ips=()
 
     for host in $($YQ -r 'keys | .[]' $hosts_yaml); do
-        for ip in $($YQ -r ".${host} | .[]" $hosts_yaml); do
+        for ip in $($YQ -r ".\"${host}\" | .[]" $hosts_yaml); do
             # Check if IP is in CIDR
             if [ "$($python -c "${py_ip}" "$cidr" "$ip")" -eq 1 ]; then
                 # Exclude the Cluster VIP itself
