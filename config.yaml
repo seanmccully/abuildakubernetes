@@ -1,6 +1,6 @@
 hosts:
-  - bodes
-  - barnard
+  - bodes.local.silverstars.io
+  - barnard.local.silverstars.io
 controlPlaneSubnet: 172.12.12.0/24
 cniBackend: 'calico-etcd'
 clusterIp: 172.12.12.125

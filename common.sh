@@ -50,8 +50,36 @@ hosts_yaml="${script_dir}/hosts.yaml";
 SSL_CNF="${script_dir}/conf/openssl.cnf"
 INTER_SSL_CNF="${script_dir}/conf/intermediate-openssl.cnf"
 
-# Define commands, preferring python3
 YQ=$(command -v yq || true);
+
+if [ -n "$YQ" ]; then
+    # Check if this is Python yq (which requires -y for YAML output)
+    if $YQ --help 2>&1 | grep -q "yq: Command-line YAML/XML processor"; then
+        # Python yq detected
+        YQ_TYPE="python"
+        YQ_YAML_FLAG="-y"
+        info "Detected Python yq (requires -y flag for YAML output)"
+    elif $YQ --version 2>&1 | grep -q "mikefarah"; then
+        # Go yq (mikefarah) detected
+        YQ_TYPE="go"
+        YQ_YAML_FLAG=""
+        info "Detected Go yq (mikefarah/yq)"
+    else
+        # Try to determine by testing -y flag
+        if echo "test: value" | $YQ -y '.' >/dev/null 2>&1; then
+            YQ_TYPE="python"
+            YQ_YAML_FLAG="-y"
+            info "Detected Python-style yq (using -y flag)"
+        else
+            YQ_TYPE="go"
+            YQ_YAML_FLAG=""
+            info "Detected Go-style yq (no -y flag)"
+        fi
+    fi
+else
+    echo "ERROR: yq not found" >&2
+    exit 1
+fi
 SED=$(command -v sed || true);
 ssh=$(command -v ssh || true);
 scp=$(command -v scp || true);
@@ -75,17 +103,17 @@ if [ ! -f "$config_yaml" ]; then
 fi
 
 # Read configuration
-BUILD_DIR=$($YQ -r '.buildDir' $config_yaml);
-KUBE_PKI=$($YQ -r '.kubePki' $config_yaml);
+BUILD_DIR=$(yq_read '.buildDir' $config_yaml);
+KUBE_PKI=$(yq_read '.kubePki' $config_yaml);
 PKI_DIR=$KUBE_PKI # Alias
-KUBE_DIR=$($YQ -r '.kubeDir' $config_yaml);
-CLUSTER_NAME=$($YQ -r '.clusterName' $config_yaml);
-CLUSTER_IP=$($YQ -r '.clusterIp' $config_yaml)
+KUBE_DIR=$(yq_read '.kubeDir' $config_yaml);
+CLUSTER_NAME=$(yq_read '.clusterName' $config_yaml);
+CLUSTER_IP=$(yq_read '.clusterIp' $config_yaml)
 CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
-SERVICE_CIDR=$($YQ -r '.serviceCidr' $config_yaml);
-CLUSTER_CIDR=$($YQ -r '.clusterCidr' $config_yaml);
-CLUSTER_DOMAIN=$($YQ -r '.clusterDomain' $config_yaml);
-KUBELET_DIR=$($YQ -r '.kubeletDir' "$config_yaml");
+SERVICE_CIDR=$(yq_read '.serviceCidr' $config_yaml);
+CLUSTER_CIDR=$(yq_read '.clusterCidr' $config_yaml);
+CLUSTER_DOMAIN=$(yq_read '.clusterDomain' $config_yaml);
+KUBELET_DIR=$(yq_read '.kubeletDir' "$config_yaml");
 
 CERT_DIR="${BUILD_DIR}/certs";
 SRC_DIR="${BUILD_DIR}/src";
@@ -164,6 +192,28 @@ KUBE_DOCS="https://github.com/kubernetes/website.git"
 KEEPALIVED="https://github.com/acassen/keepalived.git"
 HELM="https://github.com/helm/helm";
 CRITOOLS="https://github.com/kubernetes-sigs/cri-tools.git"
+
+
+# Create wrapper functions for consistent usage
+yq_write() {
+    # For in-place YAML file updates
+    local expression="$1"
+    local file="$2"
+    
+    if [ "$YQ_TYPE" = "python" ]; then
+        $YQ -y -i "$expression" "$file"
+    else
+        $YQ -i "$expression" "$file"
+    fi
+}
+
+yq_read() {
+    # For reading values from YAML
+    local expression="$1"
+    local file="$2"
+    
+    $YQ -r "$expression" "$file"
+}
 
 function isRootUser() {
   # Use id -u for reliable root check
@@ -333,7 +383,7 @@ function get_host_ips() {
 
     if [ -f $config_yaml ]; then
         # Use .[]? to handle empty hosts list gracefully
-        for host in $($YQ -r ".hosts | .[]?" $config_yaml); do
+        for host in $(yq_read ".hosts | .[]?" $config_yaml); do
             if [ -n "$host" ]; then
               local remote_hostname=$($SSH_COMMAND "$host" hostname);
               mapfile -t remote_ips < <($SSH_COMMAND "$host" "${ip_proc}");
@@ -370,13 +420,13 @@ function set_peer_ips() {
 
     # Python script to check if IP is in CIDR
     local py_ip="import ipaddress;import sys;print(1) if ipaddress.ip_address(sys.argv[2]) in ipaddress.ip_network(sys.argv[1]) else print(0)"
-    local cidr=$($YQ -r ".controlPlaneSubnet" $config_yaml)
+    local cidr=$(yq_read ".controlPlaneSubnet" $config_yaml)
 
     # Clear previous entries
     peer_ips=()
 
-    for host in $($YQ -r 'keys | .[]' $hosts_yaml); do
-        for ip in $($YQ -r ".\"${host}\" | .[]" $hosts_yaml); do
+    for host in $(yq_read 'keys | .[]' $hosts_yaml); do
+        for ip in $(yq_read ".\"${host}\" | .[]" $hosts_yaml); do
             # Check if IP is in CIDR
             if [ "$($python -c "${py_ip}" "$cidr" "$ip")" -eq 1 ]; then
                 # Exclude the Cluster VIP itself
@@ -419,6 +469,7 @@ function etcd_cluster_ips() {
     # Must echo the result for capture by caller
     echo "$cluster"
 }
+
 
 # Check binary permissions
 checkBin "$YQ"

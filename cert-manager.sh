@@ -58,10 +58,10 @@ function create_intermediate_ca() {
     exec_c "openssl genrsa -aes256 -passout file:${PASS_FILE} -out ${key_file} 4096"
     exec_c "chmod 400 ${key_file}"
 
-    local country=$($YQ -r '.san.country ' "$CERTS_YAML");
-    local state=$($YQ -r '.san.state' "$CERTS_YAML");
-    local locality=$($YQ -r '.san.locality' "$CERTS_YAML");
-    local email=$($YQ -r '.san.email' "$CERTS_YAML");
+    local country=$(yq_read '.san.country ' "$CERTS_YAML");
+    local state=$(yq_read '.san.state' "$CERTS_YAML");
+    local locality=$(yq_read '.san.locality' "$CERTS_YAML");
+    local email=$(yq_read '.san.email' "$CERTS_YAML");
     local subj="/C=${country}/ST=${state}/L=${locality}/O=kubernetes/OU=kubernetes/CN=${intermediate}-ca/emailAddress=${email}";
 
     # Create CSR for Intermediate CA
@@ -190,10 +190,10 @@ function create_ca() {
     exec_c "touch index.txt"
     exec_c "echo 1000 > serial"
 
-    local country=$($YQ -r '.san.country ' "$CERTS_YAML");
-    local state=$($YQ -r '.san.state' "$CERTS_YAML");
-    local locality=$($YQ -r '.san.locality' "$CERTS_YAML");
-    local email=$($YQ -r '.san.email' "$CERTS_YAML");
+    local country=$(yq_read '.san.country ' "$CERTS_YAML");
+    local state=$(yq_read '.san.state' "$CERTS_YAML");
+    local locality=$(yq_read '.san.locality' "$CERTS_YAML");
+    local email=$(yq_read '.san.email' "$CERTS_YAML");
     local subj="/C=${country}/ST=${state}/L=${locality}/O=kubernetes/OU=kubernetes/CN=ca/emailAddress=${email}";
 
     # Generate Root CA Key (encrypted)
@@ -265,9 +265,9 @@ function configureAlts() {
     if [ "$node_name" != "false" ]; then
         if [ -f "$hosts_yaml" ]; then
             # Add IPs from hosts_yaml
-            for host in $($YQ -r "keys | .[]" "$hosts_yaml"); do
+            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
                 if [ "$host" == "$node_name" ]; then
-                    for ip in $($YQ -r ".\"${host}\" | .[]" "$hosts_yaml"); do
+                    for ip in $(yq_read ".\"${host}\" | .[]" "$hosts_yaml"); do
                         if [[ "${ip}" != "127.0.0.1" ]]; then
                             ip_alts="${ip_alts},IP:${ip}";
                         fi
@@ -275,12 +275,16 @@ function configureAlts() {
                 fi
             done
 
+            dns_alts="${dns_alts},DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc";
+			if [ -n "${CLUSTER_DOMAIN:-}" ]; then
+            	dns_alts="${dns_alts},DNS:kubernetes.default.svc.${CLUSTER_DOMAIN}"
+        	fi
             # Add DNS names from hosts_yaml and domains from CERTS_YAML
-            for host in $($YQ -r "keys | .[]" "$hosts_yaml"); do
+            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
                 if [ "$host" == "$node_name" ]; then
                     dns_alts="${dns_alts},DNS:${host}";
                     if [ -f "$CERTS_YAML" ]; then
-                        for domains in $($YQ -r ".san.domains | .[]? " "$CERTS_YAML"); do
+                        for domains in $(yq_read ".san.domains | .[]? " "$CERTS_YAML"); do
                             if [ -n "$domains" ]; then
                                 dns_alts="${dns_alts},DNS:${host}${domains}";
                             fi
@@ -292,20 +296,24 @@ function configureAlts() {
     else
         if [ -f "$hosts_yaml" ]; then
             # Add IPs from hosts_yaml
-            for host in $($YQ -r "keys | .[]" "$hosts_yaml"); do
-                for ip in $($YQ -r ".\"${host}\" | .[]" "$hosts_yaml"); do
+            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
+                for ip in $(yq_read ".\"${host}\" | .[]" "$hosts_yaml"); do
                     if [[ "${ip}" != "127.0.0.1" ]]; then
                         ip_alts="${ip_alts},IP:${ip}";
                     fi
                 done
             done
 
+            dns_alts="${dns_alts},DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc";
+			if [ -n "${CLUSTER_DOMAIN:-}" ]; then
+            	dns_alts="${dns_alts},DNS:kubernetes.default.svc.${CLUSTER_DOMAIN}"
+        	fi
             # Add DNS names from hosts_yaml and domains from CERTS_YAML
-            for host in $($YQ -r "keys | .[]" "$hosts_yaml"); do
+            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
                 dns_alts="${dns_alts},DNS:${host}";
                 if [ -f "$CERTS_YAML" ]; then
                     # Use .[]? to handle potentially missing domains list
-                    for domains in $($YQ -r ".san.domains | .[]? " "$CERTS_YAML"); do
+                    for domains in $(yq_read ".san.domains | .[]? " "$CERTS_YAML"); do
                         if [ -n "$domains" ]; then
                             dns_alts="${dns_alts},DNS:${host}${domains}";
                         fi
@@ -316,6 +324,7 @@ function configureAlts() {
     fi
     info "finished configureAlts $node_name ${ip_alts} ${dns_alts}";
 }
+
 
 function writeConfig() {
     local component=$1;
@@ -337,57 +346,64 @@ function writeConfig() {
 
     # Initialize variables
     local orgName="kubernetes"
-    local cn_prefix=""
+    local cn=""  # Changed from cn_prefix to cn for clarity
 
     # Determine Organization Name (O)
     if [ "$cert_type" != "server_cert" ]; then
         orgName="$intermediate";
     fi
 
-    # Configure Subject Alternative Names (SANs) and adjust O/CN for specific Kubernetes roles
+    # Configure Subject Alternative Names (SANs) and set O/CN for specific Kubernetes components
     if [[ "$prefix" == "system:masters" ]]; then
         configureAlts "$component"
         orgName="${prefix}";
+        cn="${component}";  # For masters, use component name directly
     elif [[ "$prefix" == "system:nodes" ]]; then
         configureAlts "$component"
         orgName="${prefix}";
-        cn_prefix="system:node:"; # Required prefix for Node authorization
+        cn="system:node:${component}";  # Required format for Node authorization
     elif [[ "$component" == "kube-proxy" ]]; then
         configureAlts
-        orgName="system:node-proxier"; # Group for kube-proxy
-        cn_prefix="system:kube-proxy"; # User for kube-proxy
+        orgName="system:node-proxier";  # Group for kube-proxy
+        cn="system:kube-proxy";  # Standard name for kube-proxy
+    elif [[ "$component" == "kube-scheduler" ]]; then
+        configureAlts
+        orgName="system:kube-scheduler";  # Correct group for scheduler
+        cn="system:kube-scheduler";  # Standard name for scheduler
+    elif [[ "$component" == "kube-controller-manager" ]]; then
+        configureAlts
+        orgName="system:kube-controller-manager";  # Correct group for controller-manager
+        cn="system:kube-controller-manager";  # Standard name for controller-manager
     else
         configureAlts
         if [ -n "$prefix" ]; then
             orgName="${prefix}";
-            # Generic prefix handling
-            if [[ "$prefix" == *":"* ]]; then
-                 cn_prefix="${prefix}:";
-            fi
+            # For other components, use the component name directly
+            cn="${component}";
+        else
+            cn="${component}";
         fi
     fi
 
-    local country=$($YQ -r '.san.country ' "$CERTS_YAML");
-    local state=$($YQ -r '.san.state' "$CERTS_YAML");
-    local locality=$($YQ -r '.san.locality' "$CERTS_YAML");
-    local email=$($YQ -r '.san.email' "$CERTS_YAML");
+    local country=$(yq_read '.san.country ' "$CERTS_YAML");
+    local state=$(yq_read '.san.state' "$CERTS_YAML");
+    local locality=$(yq_read '.san.locality' "$CERTS_YAML");
+    local email=$(yq_read '.san.email' "$CERTS_YAML");
 
-    local subj="/C=${country}/ST=${state}/L=${locality}/O=${orgName}/OU=${intermediate}/CN=${cn_prefix}${component}/emailAddress=${email}";
+    local subj="/C=${country}/ST=${state}/L=${locality}/O=${orgName}/OU=${intermediate}/CN=${cn}/emailAddress=${email}";
 
     mkCert "$component" "$intermediate" "$cert_type" "$subj" "$icnf";
 
     # Clean up temporary config file
     rm -f "$icnf"
 }
-
-
 # Helper functions to iterate YAML configuration
 function create_server_certs() {
     info "starting create_server_certs";
     # Use .[]? to handle empty results gracefully
-    for intermediate in $($YQ -r ".certs.server | keys | .[]? " "$CERTS_YAML"); do
+    for intermediate in $(yq_read ".certs.server | keys | .[]? " "$CERTS_YAML"); do
         if [ -n "$intermediate" ]; then
-            for server in $($YQ -r ".certs.server | .[\"${intermediate}\"] | .[]? " "$CERTS_YAML"); do
+            for server in $(yq_read ".certs.server | .[\"${intermediate}\"] | .[]? " "$CERTS_YAML"); do
                 if [ -n "$server" ]; then
                     local component="$server";
                     local prefix="";
@@ -411,7 +427,7 @@ function create_host_certs() {
     fi
 
     local intermediate="kubernetes";
-    for host in $($YQ -r "keys | .[]? " "$hosts_yaml"); do
+    for host in $(yq_read "keys | .[]? " "$hosts_yaml"); do
         if [ -n "$host" ]; then
             local prefix="system:nodes";
             certHandler "$host" "$intermediate" "server_cert" "$prefix";
@@ -423,9 +439,9 @@ function create_host_certs() {
 function create_client_certs() {
     info "starting create_client_certs";
 
-    for intermediate in $($YQ -r ".certs.client | keys | .[]? " "$CERTS_YAML"); do
+    for intermediate in $(yq_read ".certs.client | keys | .[]? " "$CERTS_YAML"); do
         if [ -n "$intermediate" ]; then
-            for client in $($YQ -r ".certs.client | .[\"${intermediate}\"] | .[]? " "$CERTS_YAML"); do
+            for client in $(yq_read ".certs.client | .[\"${intermediate}\"] | .[]? " "$CERTS_YAML"); do
                 if [ -n "$client" ]; then
                     local component="$client";
                     local prefix="";
@@ -462,12 +478,12 @@ function main() {
 
     # Collect all unique intermediate CAs from both client and server sections
     declare -A intermediates
-    for intermediate in $($YQ -r ".certs.client | keys | .[]?" "$CERTS_YAML"); do
+    for intermediate in $(yq_read ".certs.client | keys | .[]?" "$CERTS_YAML"); do
         if [ -n "$intermediate" ]; then
             intermediates["$intermediate"]=1
         fi
     done
-    for intermediate in $($YQ -r ".certs.server | keys | .[]?" "$CERTS_YAML"); do
+    for intermediate in $(yq_read ".certs.server | keys | .[]?" "$CERTS_YAML"); do
         if [ -n "$intermediate" ]; then
             intermediates["$intermediate"]=1
         fi

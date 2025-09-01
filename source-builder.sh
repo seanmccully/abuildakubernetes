@@ -331,14 +331,14 @@ function calico_build() {
       if [ -z "$YQ" ] || [ ! -x "$YQ" ]; then
           warning "YQ utility not found or not executable. Skipping manifest customization."
       else
-          $YQ -y -i '.datastore="etcd"' ../charts/calico/values.yaml
-          $YQ -y -i '.network="calico"' ../charts/calico/values.yaml
-          $YQ -y -i '.bpf=true' ../charts/calico/values.yaml
-          $YQ -y -i '.includeCRDs=false' ../charts/calico/values.yaml
-          $YQ -y -i ".etcd.endpoints=\"${cluster}\"" ../charts/calico/values.yaml
-          $YQ -y -i ".tigeraOperator.image=\"tigera\/operator\"" ../charts/calico/values.yaml
-          $YQ -y -i ".tigeraOperator.registry=\"quay.io\"" ../charts/calico/values.yaml
-          $YQ -y -i ".tigeraOperator.version=\"master\"" ../charts/calico/values.yaml
+          yq_write '.datastore="etcd"' ../charts/calico/values.yaml
+          yq_write '.network="calico"' ../charts/calico/values.yaml
+          yq_write '.bpf=true' ../charts/calico/values.yaml
+          yq_write '.includeCRDs=false' ../charts/calico/values.yaml
+          yq_write ".etcd.endpoints=\"${cluster}\"" ../charts/calico/values.yaml
+          yq_write ".tigeraOperator.image=\"tigera\/operator\"" ../charts/calico/values.yaml
+          yq_write ".tigeraOperator.registry=\"quay.io\"" ../charts/calico/values.yaml
+          yq_write ".tigeraOperator.version=\"master\"" ../charts/calico/values.yaml
           # Ensure YQ and HELM paths are correctly passed if they are custom variables
           exec_c "YQ=\"${YQ}\" HELM=\"${HELM_C}\" ./generate.sh";
       fi

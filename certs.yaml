@@ -11,28 +11,55 @@ san:
   email: sean_mccully@yahoo.com
   locality: Silverlake
   state: Washington
+
+# Defines which certificates to generate.
 certs:
   client:
     etcd:
-      - kube-etcd-healthcheck-client
-      - kube-apiserver-etcd-client
+      # Standardized names for ETCD clients
+      - healthcheck-client
+      - apiserver-etcd-client
       - calico-node
     kubernetes:
       - service-accounts
-      - kubelet-client
-      - kube-apiserver-kubelet-client;system:masters
+      - apiserver-kubelet-client;system:masters
       - kube-controller-manager;system:kube-controller-manager
-      - kube-scheduler;system:kube-scheduler
+      - kube-scheduler;system:scheduler
       - kubernetes-super-admin;system:masters
       - admin;system:masters
       - kube-proxy;system:node-proxier
+      - calico-cni
     kubernetes-front-proxy:
       - front-proxy-client
   server:
     etcd:
+      # Standard names for ETCD server and peer communication.
       - kube-etcd
       - kube-etcd-peer
     kubernetes:
-      - kube-apiserver
-      - calico-cni
+      - apiserver
       - calico-typha
+
+
+# Defines which generated certificates to install into the PKI directory
+# and what their filenames should be (prefix only, .crt/.key added by installer).
+# Structure:
+#   intermediate_ca_name:
+#     component_name: destination_filename_prefix
+install_map:
+  kubernetes:
+    # API Server components
+    apiserver: "apiserver"
+    apiserver-kubelet-client: "apiserver-kubelet-client"
+    # Service Account (Special case: installs .key and generates .pub)
+    service-accounts: "sa"
+  etcd:
+    # ETCD Cluster components (installed under PKI_DIR/etcd/)
+    kube-etcd: "etcd/server"
+    kube-etcd-peer: "etcd/peer"
+    healthcheck-client: "etcd/healthcheck-client"
+    # Clients that need access to ETCD (e.g., API Server). Installed in root PKI dir.
+    apiserver-etcd-client: "apiserver-etcd-client"
+  kubernetes-front-proxy:
+    # Front Proxy Client
+    front-proxy-client: "front-proxy-client"
