@@ -25,7 +25,7 @@ declare -A peer_ips;
 DEBUG=${DEBUG:-0};
 VERBOSE=${VERBOSE:-1};
 BUILD_SOURCE=${BUILD_SOURCE:-false};
-RUN_CERTS=${RUN_CERTS:-false};
+RUN_CERTS=${RUN_CERTS:-true};
 RUN_SETUP=${RUN_SETUP:-true};
 SERVICES=${SERVICES:-true};
 CLEAN=${CLEAN:-false};
@@ -128,11 +128,12 @@ elif [ -n "$SYSTEMCTL" ]; then
   fi
 fi
 
-SYSUSERS_DIR="/etc/sysusers.d" # Default fallback
-if [ -n "$SYSTEMD_SYSUSERS" ]; then
-    _sysusers_config=$(systemd-sysusers --cat-config 2>/dev/null | grep -v '^#' | head -n 1 | awk '{ print $2 }' || true)
+SYSUSERS_DIR="/usr/lib/sysusers.d" # Default fallback
+if [ ! -d "$SYSTEMD_SYSUSERS" ]; then
+    #_sysusers_config=$(systemd-sysusers --cat-config 2>/dev/null | grep -v '^#' | head -n 1 | awk '{ print $2 }' || true)
+    _sysusers_config=$(dirname $(systemd-sysusers --cat-config 2> /dev/null | grep  '^#' | awk '{ print $2  }' | grep sysusers.d | head -n 1  ))
     if [ -n "$_sysusers_config" ]; then
-        SYSUSERS_DIR=$(dirname "$_sysusers_config")
+        SYSUSERS_DIR="${_sysusers_config}"
     fi
 fi
 
@@ -389,6 +390,20 @@ function set_peer_ips() {
     done
 
     info "finished set_peer_ips"
+}
+
+function etcd_initial_cluster() {
+    local cluster="";
+    if [ ${#peer_ips[@]} -eq 0 ]; then
+      set_peer_ips;
+    fi
+
+    for host in "${!peer_ips[@]}"; do
+        cluster+="${host}=https://${peer_ips[$host]}:2380,";
+    done
+    cluster="${cluster::-1}";
+    # Must echo the result for capture by caller
+    echo "$cluster"
 }
 
 function etcd_cluster_ips() {

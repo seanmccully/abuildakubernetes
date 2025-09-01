@@ -94,32 +94,32 @@ function setup_etcd_conf() {
     local peer_urls="https://${peer_ips[$hostname]}:2380";
     local client_urls="https://${peer_ips[$hostname]}:2379";
 
-    local cluster=etcd_cluster_ips;
+    local cluster=$(etcd_initial_cluster);
 
 
     # Use $YQ -i (in-place) instead of -ir
-    $YQ -i ".name=\"${hostname}\"" "$etcd_yml";
-    $YQ -i ".data-dir=\"${ETCD_DATA_DIR}\"" "$etcd_yml";
-    $YQ -i ".wal-dir=\"${ETCD_DATA_DIR}/wal\"" "$etcd_yml";
-    $YQ -i ".listen-peer-urls=\"${peer_urls}\"" "$etcd_yml";
-    $YQ -i ".listen-client-urls=\"${client_urls},https://127.0.0.1:2379\"" "$etcd_yml";
-    $YQ -i ".initial-advertise-peer-urls=\"${peer_urls}\"" "$etcd_yml";
-    $YQ -i ".advertise-client-urls=\"${client_urls}\"" "$etcd_yml";
-    $YQ -i ".initial-cluster=\"${cluster}\"" "$etcd_yml";
-    $YQ -i ".initial-cluster-token=\"${cluster_token}\"" "$etcd_yml";
-    $YQ -i ".initial-cluster-state=\"new\"" "$etcd_yml";
-    $YQ -i ".log-level=\"info\"" "$etcd_yml";
+    $YQ -y -i ".name=\"${hostname}\"" "$etcd_yml";
+    $YQ -y -i ".\"data-dir\"=\"${ETCD_DATA_DIR}\"" "$etcd_yml";
+    $YQ -y -i ".\"wal-dir\"=\"${ETCD_DATA_DIR}/wal\"" "$etcd_yml";
+    $YQ -y -i ".\"listen-peer-urls\"=\"${peer_urls}\"" "$etcd_yml";
+    $YQ -y -i ".\"listen-client-urls\"=\"${client_urls},https://127.0.0.1:2379\"" "$etcd_yml";
+    $YQ -y -i ".\"initial-advertise-peer-urls\"=\"${peer_urls}\"" "$etcd_yml";
+    $YQ -y -i ".\"advertise-client-urls\"=\"${client_urls}\"" "$etcd_yml";
+    $YQ -y -i ".\"initial-cluster\"=\"${cluster}\"" "$etcd_yml";
+    $YQ -y -i ".\"initial-cluster-token\"=\"${cluster_token}\"" "$etcd_yml";
+    $YQ -y -i ".\"initial-cluster-state\"=\"new\"" "$etcd_yml";
+    $YQ -y -i ".\"log-level\"=\"info\"" "$etcd_yml";
 
     # Configure TLS (Assuming certs are installed in ETCD_PKI by proc.sh)
-    $YQ -i ".client-transport-security.cert-file=\"$ETCD_PKI/server.crt\"" "$etcd_yml";
-    $YQ -i ".client-transport-security.key-file=\"$ETCD_PKI/server.key\"" "$etcd_yml";
-    $YQ -i ".client-transport-security.trusted-ca-file=\"$ETCD_PKI/ca.crt\"" "$etcd_yml";
-    $YQ -i ".client-transport-security.client-cert-auth=true" "$etcd_yml";
+    $YQ -y -i ".\"client-transport-security\".\"cert-file\"=\"$ETCD_PKI/server.crt\"" "$etcd_yml";
+    $YQ -y -i ".\"client-transport-security\".\"key-file\"=\"$ETCD_PKI/server.key\"" "$etcd_yml";
+    $YQ -y -i ".\"client-transport-security\".\"trusted-ca-file\"=\"$ETCD_PKI/ca.crt\"" "$etcd_yml";
+    $YQ -y -i ".\"client-transport-security\".\"client-cert-auth\"=true" "$etcd_yml";
 
-    $YQ -i ".peer-transport-security.cert-file=\"$ETCD_PKI/peer.crt\"" "$etcd_yml";
-    $YQ -i ".peer-transport-security.key-file=\"$ETCD_PKI/peer.key\"" "$etcd_yml";
-    $YQ -i ".peer-transport-security.trusted-ca-file=\"$ETCD_PKI/ca.crt\"" "$etcd_yml";
-    $YQ -i ".peer-transport-security.client-cert-auth=true" "$etcd_yml";
+    $YQ -y -i ".\"peer-transport-security\".\"cert-file\"=\"$ETCD_PKI/peer.crt\"" "$etcd_yml";
+    $YQ -y -i ".\"peer-transport-security\".\"key-file\"=\"$ETCD_PKI/peer.key\"" "$etcd_yml";
+    $YQ -y -i ".\"peer-transport-security\".\"trusted-ca-file\"=\"$ETCD_PKI/ca.crt\"" "$etcd_yml";
+    $YQ -y -i ".\"peer-transport-security\".\"client-cert-auth\"=true" "$etcd_yml";
 
     info "finished setup_etcd_conf"
 }
@@ -221,7 +221,7 @@ function setup_kube_scheduler() {
     $SED -i "s~CLUSTER_ADDR~https://${CLUSTER_IP}:6443~g" "$ks_env";
     $SED -i "s~CONFIG_YAML~${ks_yaml}~g" "$ks_env";
 
-    $YQ -i ".clientConnection.kubeconfig=\"${ks_conf}\"" "$ks_yaml";
+    $YQ -y -i ".clientConnection.kubeconfig=\"${ks_conf}\"" "$ks_yaml";
 
     info "finished setup_kube_scheduler"
 }
@@ -230,12 +230,12 @@ function setup_kubelet() {
     info "starting setup_kubelet"
     local k_env="${KUBE_DIR}/kubelet.env";
 
-    local kubelet_config="${kubelet_dir}/kubelet-config.yaml";
+    local kubelet_config="${KUBELET_DIR}/kubelet-config.yaml";
 
-    mkdir -p "$kubelet_dir";
+    mkdir -p "$KUBELET_DIR";
 
     if [ ! -f "$k_env" ] || [ ! -f "$kubelet_config" ]; then
-      warning "kubelet configuration files not found in ${KUBE_DIR} or ${kubelet_dir}."
+      warning "kubelet configuration files not found in ${KUBE_DIR} or ${KUBELET_DIR}."
       return
     fi
 
@@ -262,7 +262,7 @@ function setup_kubelet() {
 
     # CLUSTER_IP is globally defined.
     $SED -i "s~CLUSTER_ADDR~https://${CLUSTER_IP}:6443~g" "$k_env";
-    $SED -i "s~KUBECONFIG~${kubelet_dir}/kubeconfig~g" "$k_env";
+    $SED -i "s~KUBECONFIG~${KUBELET_DIR}/kubeconfig~g" "$k_env";
     $SED -i "s~CONTAINERD_SOCK~${containerd_sock}~g" "$k_env";
     $SED -i "s~KUBELET_CONFIG~${kubelet_config}~g" "$k_env";
     $SED -i "s/IP_ADDR/${ip_addr}/g" "$k_env";
@@ -290,11 +290,11 @@ function setup_kube_proxy() {
     $SED -i "s~CLUSTER_ADDR~https://${CLUSTER_IP}:6443~g" "$kp_env";
     $SED -i "s~PROXY_CONFIG~${kube_proxy_config}~g" "$kp_env";
 
-    $YQ -i ".clusterCIDR=\"${CLUSTER_CIDR}\"" "$kube_proxy_config";
-    $YQ -i ".clientConnection.kubeconfig=\"${kube_proxy_kubeconfig}\"" "$kube_proxy_config";
+    $YQ -y -i ".clusterCIDR=\"${CLUSTER_CIDR}\"" "$kube_proxy_config";
+    $YQ -y -i ".clientConnection.kubeconfig=\"${kube_proxy_kubeconfig}\"" "$kube_proxy_config";
     # Removed cgroupDriver setting as it's typically for Kubelet, not Kube-proxy.
     # Added mode setting (e.g., iptables or ipvs)
-    $YQ -i ".mode=\"iptables\"" "$kube_proxy_config";
+    $YQ -y -i ".mode=\"iptables\"" "$kube_proxy_config";
 
     info "finished setup_kube_proxy"
 }
