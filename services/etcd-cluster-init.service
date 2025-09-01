@@ -1,0 +1,14 @@
+[Unit]
+Description=ETCD Cluster Initialization Synchronizer
+Before=etcd.service
+After=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/etcd-cluster-sync.sh start
+ExecStop=/usr/local/bin/etcd-cluster-sync.sh stop
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

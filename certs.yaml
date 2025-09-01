@@ -23,8 +23,8 @@ certs:
     kubernetes:
       - service-accounts
       - apiserver-kubelet-client;system:masters
-      - kube-controller-manager;system:kube-controller-manager
-      - kube-scheduler;system:scheduler
+      - system:kube-controller-manager
+      - system:kube-scheduler
       - kubernetes-super-admin;system:masters
       - admin;system:masters
       - kube-proxy;system:node-proxier

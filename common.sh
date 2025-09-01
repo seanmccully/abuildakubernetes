@@ -50,36 +50,13 @@ hosts_yaml="${script_dir}/hosts.yaml";
 SSL_CNF="${script_dir}/conf/openssl.cnf"
 INTER_SSL_CNF="${script_dir}/conf/intermediate-openssl.cnf"
 
+# Check for yq first, but don't detect type yet
 YQ=$(command -v yq || true);
-
-if [ -n "$YQ" ]; then
-    # Check if this is Python yq (which requires -y for YAML output)
-    if $YQ --help 2>&1 | grep -q "yq: Command-line YAML/XML processor"; then
-        # Python yq detected
-        YQ_TYPE="python"
-        YQ_YAML_FLAG="-y"
-        info "Detected Python yq (requires -y flag for YAML output)"
-    elif $YQ --version 2>&1 | grep -q "mikefarah"; then
-        # Go yq (mikefarah) detected
-        YQ_TYPE="go"
-        YQ_YAML_FLAG=""
-        info "Detected Go yq (mikefarah/yq)"
-    else
-        # Try to determine by testing -y flag
-        if echo "test: value" | $YQ -y '.' >/dev/null 2>&1; then
-            YQ_TYPE="python"
-            YQ_YAML_FLAG="-y"
-            info "Detected Python-style yq (using -y flag)"
-        else
-            YQ_TYPE="go"
-            YQ_YAML_FLAG=""
-            info "Detected Go-style yq (no -y flag)"
-        fi
-    fi
-else
+if [ -z "$YQ" ]; then
     echo "ERROR: yq not found" >&2
     exit 1
 fi
+
 SED=$(command -v sed || true);
 ssh=$(command -v ssh || true);
 scp=$(command -v scp || true);
@@ -96,88 +73,6 @@ fi
 SSH_COMMAND="${ssh} -o StrictHostKeyChecking=accept-new";
 SCP_COMMAND="${scp} -o StrictHostKeyChecking=accept-new";
 
-# Check if config_yaml exists
-if [ ! -f "$config_yaml" ]; then
-  echo "ERROR: Configuration file not found: ${config_yaml}" >&2
-  exit 1
-fi
-
-# Read configuration
-BUILD_DIR=$(yq_read '.buildDir' $config_yaml);
-KUBE_PKI=$(yq_read '.kubePki' $config_yaml);
-PKI_DIR=$KUBE_PKI # Alias
-KUBE_DIR=$(yq_read '.kubeDir' $config_yaml);
-CLUSTER_NAME=$(yq_read '.clusterName' $config_yaml);
-CLUSTER_IP=$(yq_read '.clusterIp' $config_yaml)
-CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
-SERVICE_CIDR=$(yq_read '.serviceCidr' $config_yaml);
-CLUSTER_CIDR=$(yq_read '.clusterCidr' $config_yaml);
-CLUSTER_DOMAIN=$(yq_read '.clusterDomain' $config_yaml);
-KUBELET_DIR=$(yq_read '.kubeletDir' "$config_yaml");
-
-CERT_DIR="${BUILD_DIR}/certs";
-SRC_DIR="${BUILD_DIR}/src";
-
-# Ensure BUILD_DIR exists
-mkdir -p "$BUILD_DIR"
-
-# Set GOROOT if not already set
-if [ -z "${GOROOT:-}" ]; then
-  GOROOT="${SRC_DIR}/go";
-fi
-
-CALICO_SRC="$SRC_DIR/calico";
-CNI_CONF_DIR="/etc/cni/net.d";
-CNI_BIN_DIR="/opt/cni/bin";
-
-# CA Password handling: Generate and store if file doesn't exist
-PASS_FILE="$CERT_DIR/.ca_pass";
-if [ ! -f "${PASS_FILE}" ]; then
-  mkdir -p "$CERT_DIR"
-  CA_PASS=$(openssl rand -hex 12);
-  echo "$CA_PASS" > "$PASS_FILE"
-  chmod 0400 "$PASS_FILE"
-else
-  CA_PASS=$(cat "$PASS_FILE");
-fi
-
-SYSTEMCTL=$(command -v systemctl || true)
-SYSTEMD_SYSUSERS=$(command -v systemd-sysusers || true);
-
-# Improved SystemD path detection
-SYSTEMD_SERVICE_PATH="/etc/systemd/system" # Default fallback
-if command -v pkg-config &> /dev/null && pkg-config systemd &> /dev/null; then
-    SYSTEMD_SERVICE_PATH=$(pkg-config --variable=systemdsystemunitdir systemd)
-elif [ -n "$SYSTEMCTL" ]; then
-  # Try detecting path from a common service if pkg-config fails
-  PATH_DETECTED=$($SYSTEMCTL show --property=FragmentPath --value systemd-logind.service 2>/dev/null | xargs dirname || true)
-  if [ -n "$PATH_DETECTED" ] && [ -d "$PATH_DETECTED" ]; then
-    SYSTEMD_SERVICE_PATH=$PATH_DETECTED
-  fi
-fi
-
-SYSUSERS_DIR="/usr/lib/sysusers.d" # Default fallback
-if [ ! -d "$SYSTEMD_SYSUSERS" ]; then
-    #_sysusers_config=$(systemd-sysusers --cat-config 2>/dev/null | grep -v '^#' | head -n 1 | awk '{ print $2 }' || true)
-    _sysusers_config=$(dirname $(systemd-sysusers --cat-config 2> /dev/null | grep  '^#' | awk '{ print $2  }' | grep sysusers.d | head -n 1  ))
-    if [ -n "$_sysusers_config" ]; then
-        SYSUSERS_DIR="${_sysusers_config}"
-    fi
-fi
-
-
-ETCD_PKI="${KUBE_PKI}/etcd";
-ETCD_DATA_DIR="/var/lib/etcd";
-ETCD_TOKEN_FILE="/tmp/cluster.token";
-CERTS_YAML="${script_dir}/certs.yaml";
-SERVICE_DIR="${script_dir}/services"
-CONF_DIR="${script_dir}/conf"
-KUBE_USER="kube";
-KUBE_GROUP="kube";
-ETCD_CONF="/etc/etcd";
-ETCD_USER="etcd";
-ETCD_GROUP="etcd";
-
 # REPOS ##
 GO="https://go.googlesource.com/go"
 GOLANGCI="https://github.com/golangci/golangci-lint.git"
@@ -193,74 +88,7 @@ KEEPALIVED="https://github.com/acassen/keepalived.git"
 HELM="https://github.com/helm/helm";
 CRITOOLS="https://github.com/kubernetes-sigs/cri-tools.git"
 
-
-# Create wrapper functions for consistent usage
-yq_write() {
-    # For in-place YAML file updates
-    local expression="$1"
-    local file="$2"
-    
-    if [ "$YQ_TYPE" = "python" ]; then
-        $YQ -y -i "$expression" "$file"
-    else
-        $YQ -i "$expression" "$file"
-    fi
-}
-
-yq_read() {
-    # For reading values from YAML
-    local expression="$1"
-    local file="$2"
-    
-    $YQ -r "$expression" "$file"
-}
-
-function isRootUser() {
-  # Use id -u for reliable root check
-  [[ "$( id -u )" -eq 0 ]]
-}
-
-# Robust command execution function. Executes command and returns exit status.
-# Usage: exec_c <command_string> [host]
-function exec_c() {
-    local command="$1"
-    local _host="${2:-local}"
-
-    debug "start exec_c ${command} on ${_host}"
-
-    # Use bash -c to execute the command string safely in a subshell.
-    if [[ "$_host" == "local" ]]; then
-        # We must disable 'set -e' temporarily to capture the exit status ourselves.
-        set +e
-        output=$(bash -c "${command}" 2>&1)
-        local exit_status=$?
-        set -e
-    else
-        # Execute command remotely
-        set +e
-        # Quoting for remote execution: Single quotes around the command assume the command string itself is safely constructed.
-        output=$($SSH_COMMAND "$_host" "bash -c '${command}'" 2>&1)
-        local exit_status=$?
-        set -e
-    fi
-
-    # Handle failure
-    if [ $exit_status -ne 0 ]; then
-          # Print output if any
-          [ -n "$output" ] && echo "$output" >&2
-          # Log the error. The caller decides whether to exit.
-          write_message $LOG_LEVEL_ERROR "${command} on ${_host} failed with err: ${exit_status}"
-          return $exit_status
-    fi
-
-    # Print output if VERBOSE is enabled
-    if [ "$VERBOSE" -eq 1 ] && [ -n "$output" ]; then
-      echo "$output"
-    fi
-
-    debug "finished exec_c ${command}";
-    return 0
-}
+# ====== DEFINE FUNCTIONS FIRST ======
 
 function write_message() {
   local _level="$1"
@@ -337,6 +165,183 @@ function checkBin() {
     if [ ! -x "$_binary" ]; then
         error_message "Binary '$_binary' not found or does not have execute permission." 102
     fi
+}
+
+function isRootUser() {
+  # Use id -u for reliable root check
+  [[ "$( id -u )" -eq 0 ]]
+}
+
+# ====== NOW DETECT YQ TYPE (after functions are defined) ======
+
+if [ -n "$YQ" ]; then
+    # Check if this is Python yq (which requires -y for YAML output)
+    if $YQ --help 2>&1 | grep -q "yq: Command-line YAML/XML processor"; then
+        # Python yq detected
+        YQ_TYPE="python"
+        YQ_YAML_FLAG="-y"
+        info "Detected Python yq (requires -y flag for YAML output)"
+    elif $YQ --version 2>&1 | grep -q "mikefarah"; then
+        # Go yq (mikefarah) detected
+        YQ_TYPE="go"
+        YQ_YAML_FLAG=""
+        info "Detected Go yq (mikefarah/yq)"
+    else
+        # Try to determine by testing -y flag
+        if echo "test: value" | $YQ -y '.' >/dev/null 2>&1; then
+            YQ_TYPE="python"
+            YQ_YAML_FLAG="-y"
+            info "Detected Python-style yq (using -y flag)"
+        else
+            YQ_TYPE="go"
+            YQ_YAML_FLAG=""
+            info "Detected Go-style yq (no -y flag)"
+        fi
+    fi
+fi
+
+# Create wrapper functions for consistent usage
+yq_write() {
+    # For in-place YAML file updates
+    local expression="$1"
+    local file="$2"
+    
+    if [ "$YQ_TYPE" = "python" ]; then
+        $YQ -y -i "$expression" "$file"
+    else
+        $YQ -i "$expression" "$file"
+    fi
+}
+
+yq_read() {
+    # For reading values from YAML
+    local expression="$1"
+    local file="$2"
+    
+    $YQ -r "$expression" "$file"
+}
+
+# Check if config_yaml exists
+if [ ! -f "$config_yaml" ]; then
+  echo "ERROR: Configuration file not found: ${config_yaml}" >&2
+  exit 1
+fi
+
+# Read configuration (now using yq_read wrapper)
+BUILD_DIR=$(yq_read '.buildDir' $config_yaml);
+KUBE_PKI=$(yq_read '.kubePki' $config_yaml);
+PKI_DIR=$KUBE_PKI # Alias
+KUBE_DIR=$(yq_read '.kubeDir' $config_yaml);
+CLUSTER_NAME=$(yq_read '.clusterName' $config_yaml);
+CLUSTER_IP=$(yq_read '.clusterIp' $config_yaml)
+CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
+SERVICE_CIDR=$(yq_read '.serviceCidr' $config_yaml);
+CLUSTER_CIDR=$(yq_read '.clusterCidr' $config_yaml);
+CLUSTER_DOMAIN=$(yq_read '.clusterDomain' $config_yaml);
+KUBELET_DIR=$(yq_read '.kubeletDir' "$config_yaml");
+
+CERT_DIR="${BUILD_DIR}/certs";
+SRC_DIR="${BUILD_DIR}/src";
+
+# Ensure BUILD_DIR exists
+mkdir -p "$BUILD_DIR"
+
+# Set GOROOT if not already set
+if [ -z "${GOROOT:-}" ]; then
+  GOROOT="${SRC_DIR}/go";
+fi
+
+CALICO_SRC="$SRC_DIR/calico";
+CNI_CONF_DIR="/etc/cni/net.d";
+CNI_BIN_DIR="/opt/cni/bin";
+
+# CA Password handling: Generate and store if file doesn't exist
+PASS_FILE="$CERT_DIR/.ca_pass";
+if [ ! -f "${PASS_FILE}" ]; then
+  mkdir -p "$CERT_DIR"
+  CA_PASS=$(openssl rand -hex 12);
+  echo "$CA_PASS" > "$PASS_FILE"
+  chmod 0400 "$PASS_FILE"
+else
+  CA_PASS=$(cat "$PASS_FILE");
+fi
+
+SYSTEMCTL=$(command -v systemctl || true)
+SYSTEMD_SYSUSERS=$(command -v systemd-sysusers || true);
+
+# Improved SystemD path detection
+SYSTEMD_SERVICE_PATH="/etc/systemd/system" # Default fallback
+if command -v pkg-config &> /dev/null && pkg-config systemd &> /dev/null; then
+    SYSTEMD_SERVICE_PATH=$(pkg-config --variable=systemdsystemunitdir systemd)
+elif [ -n "$SYSTEMCTL" ]; then
+  # Try detecting path from a common service if pkg-config fails
+  PATH_DETECTED=$($SYSTEMCTL show --property=FragmentPath --value systemd-logind.service 2>/dev/null | xargs dirname || true)
+  if [ -n "$PATH_DETECTED" ] && [ -d "$PATH_DETECTED" ]; then
+    SYSTEMD_SERVICE_PATH=$PATH_DETECTED
+  fi
+fi
+
+SYSUSERS_DIR="/usr/lib/sysusers.d" # Default fallback
+if [ ! -d "$SYSTEMD_SYSUSERS" ]; then
+    #_sysusers_config=$(systemd-sysusers --cat-config 2>/dev/null | grep -v '^#' | head -n 1 | awk '{ print $2 }' || true)
+    _sysusers_config=$(dirname $(systemd-sysusers --cat-config 2> /dev/null | grep  '^#' | awk '{ print $2  }' | grep sysusers.d | head -n 1  ))
+    if [ -n "$_sysusers_config" ]; then
+        SYSUSERS_DIR="${_sysusers_config}"
+    fi
+fi
+
+ETCD_PKI="${KUBE_PKI}/etcd";
+ETCD_DATA_DIR="/var/lib/etcd";
+ETCD_TOKEN_FILE="/tmp/cluster.token";
+CERTS_YAML="${script_dir}/certs.yaml";
+SERVICE_DIR="${script_dir}/services"
+CONF_DIR="${script_dir}/conf"
+KUBE_USER="kube";
+KUBE_GROUP="kube";
+ETCD_CONF="/etc/etcd";
+ETCD_USER="etcd";
+ETCD_GROUP="etcd";
+
+# Robust command execution function. Executes command and returns exit status.
+# Usage: exec_c <command_string> [host]
+function exec_c() {
+    local command="$1"
+    local _host="${2:-local}"
+
+    debug "start exec_c ${command} on ${_host}"
+
+    # Use bash -c to execute the command string safely in a subshell.
+    if [[ "$_host" == "local" ]]; then
+        # We must disable 'set -e' temporarily to capture the exit status ourselves.
+        set +e
+        output=$(bash -c "${command}" 2>&1)
+        local exit_status=$?
+        set -e
+    else
+        # Execute command remotely
+        set +e
+        # Quoting for remote execution: Single quotes around the command assume the command string itself is safely constructed.
+        output=$($SSH_COMMAND "$_host" "bash -c '${command}'" 2>&1)
+        local exit_status=$?
+        set -e
+    fi
+
+    # Handle failure
+    if [ $exit_status -ne 0 ]; then
+          # Print output if any
+          [ -n "$output" ] && echo "$output" >&2
+          # Log the error. The caller decides whether to exit.
+          write_message $LOG_LEVEL_ERROR "${command} on ${_host} failed with err: ${exit_status}"
+          return $exit_status
+    fi
+
+    # Print output if VERBOSE is enabled
+    if [ "$VERBOSE" -eq 1 ] && [ -n "$output" ]; then
+      echo "$output"
+    fi
+
+    debug "finished exec_c ${command}";
+    return 0
 }
 
 function certValidate() {
@@ -469,7 +474,6 @@ function etcd_cluster_ips() {
     # Must echo the result for capture by caller
     echo "$cluster"
 }
-
 
 # Check binary permissions
 checkBin "$YQ"
