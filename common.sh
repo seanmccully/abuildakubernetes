@@ -25,9 +25,9 @@ declare -A peer_ips;
 DEBUG=${DEBUG:-0};
 VERBOSE=${VERBOSE:-1};
 BUILD_SOURCE=${BUILD_SOURCE:-false};
-RUN_CERTS=${RUN_CERTS:-true};
+RUN_CERTS=${RUN_CERTS:-false};
 RUN_SETUP=${RUN_SETUP:-true};
-SERVICES=${SERVICES:-false};
+SERVICES=${SERVICES:-true};
 CLEAN=${CLEAN:-false};
 
 usage="$(basename "$0") [-h] [-s -c -x -y -l]
@@ -82,7 +82,7 @@ KUBE_DIR=$($YQ -r '.kubeDir' $config_yaml);
 CLUSTER_NAME=$($YQ -r '.clusterName' $config_yaml);
 CLUSTER_IP=$($YQ -r '.clusterIp' $config_yaml)
 CLUSTER_ADDRESS="https://${CLUSTER_IP}:6443";
-SERVICE_CIDR=$($YQ -r '.serviceDidr' $config_yaml);
+SERVICE_CIDR=$($YQ -r '.serviceCidr' $config_yaml);
 CLUSTER_CIDR=$($YQ -r '.clusterCidr' $config_yaml);
 CLUSTER_DOMAIN=$($YQ -r '.clusterDomain' $config_yaml);
 KUBELET_DIR=$($YQ -r '.kubeletDir' "$config_yaml");
