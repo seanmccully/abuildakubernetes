@@ -247,15 +247,19 @@ function setup_kubelet() {
     local dns_ip
     dns_ip=$(${python} -c "import ipaddress;print(list(ipaddress.IPv4Network('${SERVICE_CIDR}'))[10])")
 
-    # Apply other configurations using YQ
+    # Apply configurations using YQ for structured fields
     yq_write ".address=\"${ip_addr}\"" "$kubelet_config" || warning "Failed to set address in kubelet config."
     yq_write ".clusterDomain=\"${CLUSTER_DOMAIN}\"" "$kubelet_config" || warning "Failed to set clusterDomain."
     yq_write ".clusterDNS=[\"${dns_ip}\"]" "$kubelet_config" || warning "Failed to set clusterDNS."
-	yq_write ".cgroupDriver=\"systemd\"" "$kubelet_config" || warning "Failed to set cgroupDriver=systemd using YQ."
-    # Note: KUBELET_DIR replacement might be needed if the template uses it for specific paths like staticPodPath.
-    # If so, ensure the template is structured for YQ modification or keep the SED command for that specific replacement if necessary.
-    # $SED -i "s~KUBELET_DIR~${KUBELET_DIR}~g" "$kubelet_config";
-
+    yq_write ".cgroupDriver=\"systemd\"" "$kubelet_config" || warning "Failed to set cgroupDriver=systemd using YQ."
+    
+    # Update TLS certificate paths
+    yq_write ".tlsCertFile=\"${KUBELET_DIR}/kubelet.crt\"" "$kubelet_config" || warning "Failed to set tlsCertFile."
+    yq_write ".tlsPrivateKeyFile=\"${KUBELET_DIR}/kubelet.key\"" "$kubelet_config" || warning "Failed to set tlsPrivateKeyFile."
+    
+    # If there are any other KUBELET_DIR placeholders, use SED as fallback
+    # This catches any template variables that might be in string values
+    $SED -i "s~KUBELET_DIR~${KUBELET_DIR}~g" "$kubelet_config"
 
     # Detect containerd socket, with fallback
     local containerd_sock
@@ -265,7 +269,7 @@ function setup_kubelet() {
       warning "Could not detect running containerd socket, falling back to $containerd_sock"
     fi
 
-
+    # Update the .env file with SED (since it's not YAML)
     # CLUSTER_IP is globally defined.
     $SED -i "s~CLUSTER_ADDR~https://${CLUSTER_IP}:6443~g" "$k_env";
     $SED -i "s~KUBECONFIG~${KUBELET_DIR}/kubeconfig~g" "$k_env";
@@ -273,6 +277,7 @@ function setup_kubelet() {
     $SED -i "s~KUBELET_CONFIG~${kubelet_config}~g" "$k_env";
     $SED -i "s/IP_ADDR/${ip_addr}/g" "$k_env";
     $SED -i "s~CA_CERT~${KUBE_PKI}/ca.crt~g" "$k_env";
+
     info "finished setup_kubelet"
 }
 

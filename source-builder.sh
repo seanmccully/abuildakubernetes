@@ -331,14 +331,22 @@ function calico_build() {
       if [ -z "$YQ" ] || [ ! -x "$YQ" ]; then
           warning "YQ utility not found or not executable. Skipping manifest customization."
       else
-          yq_write '.datastore="etcd"' ../charts/calico/values.yaml
-          yq_write '.network="calico"' ../charts/calico/values.yaml
-          yq_write '.bpf=true' ../charts/calico/values.yaml
-          yq_write '.includeCRDs=false' ../charts/calico/values.yaml
-          yq_write ".etcd.endpoints=\"${cluster}\"" ../charts/calico/values.yaml
-          yq_write ".tigeraOperator.image=\"tigera\/operator\"" ../charts/calico/values.yaml
-          yq_write ".tigeraOperator.registry=\"quay.io\"" ../charts/calico/values.yaml
-          yq_write ".tigeraOperator.version=\"master\"" ../charts/calico/values.yaml
+          val_yml="../charts/calico/values.yaml";
+          local etcd_cert=$(cat "${CERTS_DIR}/etcd/certs/kube-etcd-peer.cert.pem")
+          local etcd_key=$(cat "${CERT_DIR}/etcd/private/kube-etcd-peer.key.pem")
+          local etcd_ca=$(cat "${CERT_DIR}/etcd/certs/etcd.cert.pem")
+          yq_write '.datastore="etcd"' $val_yml
+          yq_write '.etcd.tls.crt = $val' "$chart_values" "$etcd_cert"
+          yq_write '.etcd.tls.key = $val' "$chart_values" "$etcd_key"
+          yq_write '.etcd.tls.ca = $val' "$chart_values" "$etcd_ca"
+          yq_write '.network="calico"' $val_yml
+          yq_write '.bpf=true' $val_yml
+          yq_write '.includeCRDs=false' $val_yml
+
+          yq_write ".etcd.endpoints=\"${cluster}\"" $val_yml
+          yq_write ".tigeraOperator.image=\"tigera\/operator\"" $val_yml
+          yq_write ".tigeraOperator.registry=\"quay.io\"" $val_yml
+          yq_write ".tigeraOperator.version=\"master\"" $val_yml
           # Ensure YQ and HELM paths are correctly passed if they are custom variables
           exec_c "YQ=\"${YQ}\" HELM=\"${HELM_C}\" ./generate.sh";
       fi

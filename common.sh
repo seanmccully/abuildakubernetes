@@ -202,16 +202,31 @@ fi
 
 # Create wrapper functions for consistent usage
 yq_write() {
-    # For in-place YAML file updates
     local expression="$1"
     local file="$2"
+    local value="${3:-}"  # Optional third parameter for values
     
     if [ "$YQ_TYPE" = "python" ]; then
-        $YQ -y -i "$expression" "$file"
+        if [ -n "$value" ]; then
+            # If a value is provided, use --arg to pass it safely
+            # This handles multiline strings properly
+            $YQ -y -i --arg val "$value" "$expression" "$file"
+        else
+            # Standard expression without value
+            $YQ -y -i "$expression" "$file"
+        fi
     else
-        $YQ -i "$expression" "$file"
+        if [ -n "$value" ]; then
+            # For Go yq, export as environment variable
+            export YQ_VALUE="$value"
+            $YQ -i "$expression" "$file"
+            unset YQ_VALUE
+        else
+            $YQ -i "$expression" "$file"
+        fi
     fi
 }
+
 
 yq_read() {
     # For reading values from YAML

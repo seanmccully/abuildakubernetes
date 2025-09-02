@@ -223,7 +223,6 @@ function install_certs() {
 function provision_calico() {
     info "started provision_calico";
     # CLUSTER_CIDR is used in calico_etcd_manifests
-    calico_etcd_manifests;
 }
 
 
@@ -244,8 +243,8 @@ function calico_etcd_manifests() {
       return 1
     fi
 
-    export GOPATH="${GOROOT}";
-    export PATH="${GOPATH}/bin:${PATH}";
+    export GOROOT="${GOROOT}";
+    export PATH="${GOROOT}/bin:${PATH}";
 
     # Install goimports if go is available
     if command -v go >/dev/null 2>&1; then
@@ -270,27 +269,27 @@ function calico_etcd_manifests() {
 
     local mtu
     mtu=$(cat "/sys/class/net/${intf}/mtu");
-    
-    # CRITICAL FIX: Execute the function to get the cluster IPs
+
     local cluster
     cluster=$(etcd_cluster_ips);
 
     # Read certificate contents and export as environment variables
-    export etcd_cert=$(cat "${ETCD_PKI}/peer.crt")
-    export etcd_key=$(cat "${ETCD_PKI}/peer.key")
-    export etcd_ca=$(cat "${ETCD_PKI}/ca.crt")
+
+    local etcd_cert=$(cat "${ETCD_PKI}/peer.crt")
+    local etcd_key=$(cat "${ETCD_PKI}/peer.key")
+    local etcd_ca=$(cat "${ETCD_PKI}/ca.crt")
 
     if [ ! -f "$chart_values" ]; then
       warning "Calico chart values file not found: ${chart_values}"
       return 1
     fi
 
-    # Update chart values - use wrapper function or detect yq type
 	yq_write ".mtu=\"${mtu}\"" "$chart_values";
 	yq_write ".etcd.endpoints=\"${cluster}\"" "$chart_values";
-	yq_write '.etcd.tls.crt = strenv(etcd_cert) | .etcd.tls.crt style="literal"' "$chart_values"
-	yq_write '.etcd.tls.key = strenv(etcd_key) | .etcd.tls.key style="literal"' "$chart_values"
-	yq_write '.etcd.tls.ca = strenv(etcd_ca) | .etcd.tls.ca style="literal"' "$chart_values"
+    yq_write '.etcd.tls.crt = $val' "$chart_values" "$etcd_cert"
+    yq_write '.etcd.tls.key = $val' "$chart_values" "$etcd_key"
+    yq_write '.etcd.tls.ca = $val' "$chart_values" "$etcd_ca"
+
 
     # Generate manifests (if go and necessary tools are available)
     if command -v go >/dev/null 2>&1; then
@@ -406,23 +405,23 @@ function create_kubeconfigs() {
     mkdir -p "$KUBE_DIR"
 
     # Kube Controller Manager
-    component="kube-controller-manager";
-    intermediate="kubernetes";
-    local controller_config="${KUBE_DIR}/kube-controller-manager.kubeconfig";
-    local component_crt="${CERT_DIR}/${intermediate}/certs/${component}.cert.pem"
-    local component_key="${CERT_DIR}/${intermediate}/private/${component}.key.pem"
+    local component="kube-controller-manager";
+    local intermediate="kubernetes";
+    local component_config="${KUBE_DIR}/${component}.kubeconfig";
+    local component_crt="${CERT_DIR}/${intermediate}/certs/system:${component}.cert.pem"
+    local component_key="${CERT_DIR}/${intermediate}/private/system:${component}.key.pem"
 
-    kubeconfig "$controller_config" "system:$component" "$ca_cert" "$component_crt" "$component_key"
+    kubeconfig "$component_config" "$component" "$ca_cert" "$component_crt" "$component_key"
+    exec_c "chmod 0400 $component_config"
 
     # Kube Scheduler
     #get_component_certs "kube-scheduler" "kubernetes" component_crt component_key
     component="kube-scheduler";
-    intermediate="kubernetes";
-    component_config="${KUBE_DIR}/kube-scheduler.kubeconfig";
-    component_crt="${CERT_DIR}/${intermediate}/certs/${component}.cert.pem"
-    component_key="${CERT_DIR}/${intermediate}/private/${component}.key.pem"
+    component_config="${KUBE_DIR}/${component}.kubeconfig";
+    component_crt="${CERT_DIR}/${intermediate}/certs/system:${component}.cert.pem"
+    component_key="${CERT_DIR}/${intermediate}/private/system:${component}.key.pem"
 
-    kubeconfig "$component_config" "system:$component" "$ca_cert" "$component_crt" "$component_key"
+    kubeconfig "$component_config" "$component" "$ca_cert" "$component_crt" "$component_key"
     exec_c "chmod 0400 $component_config"
 
     # Super Admin
@@ -430,11 +429,12 @@ function create_kubeconfigs() {
     #local super_admin_config="${KUBE_DIR}/super-admin.kubeconfig";
 
     component="kubernetes-super-admin";
-    intermediate="kubernetes";
-    component_config="${KUBE_DIR}/kubernetes-super-admin.kubeconfig";
+    component_config="${KUBE_DIR}/${component}.kubeconfig";
     component_crt="${CERT_DIR}/${intermediate}/certs/${component}.cert.pem"
     component_key="${CERT_DIR}/${intermediate}/private/${component}.key.pem"
+
     kubeconfig "$component_config" "${component}" "$ca_cert" "$component_crt" "$component_key"
+    exec_c "chmod 0400 $component_config"
 
     # Admin (for local usage)
     #get_component_certs "admin" "kubernetes" component_crt component_key
@@ -445,10 +445,10 @@ function create_kubeconfigs() {
     # Calico CNI
     #get_component_certs "calico-cni" "kubernetes" component_crt component_key
     component="calico-cni"
+    local cni_config="${CNI_CONF_DIR}/calico-kubeconfig";
     component_crt="${CERT_DIR}/${intermediate}/certs/${component}.cert.pem"
     component_key="${CERT_DIR}/${intermediate}/private/${component}.key.pem"
     mkdir -p "$CNI_CONF_DIR"
-    local cni_config="${CNI_CONF_DIR}/calico-kubeconfig";
     kubeconfig "$cni_config" "$component" "$ca_cert" "$component_crt" "$component_key"
     exec_c "chmod 600 ${cni_config}"
 
@@ -550,7 +550,7 @@ function kube_service_install() {
     exec_c "install -m 644 ${SERVICE_DIR}/*.env ${KUBE_DIR}/"
     exec_c "install -m 644 ${SERVICE_DIR}/*.service ${SYSTEMD_SERVICE_PATH}"
 
-    # Install configuration templates
+    # Install configuration templates locally
     [ -f "${CONF_DIR}/50-sysctl.conf" ] && exec_c "install -m 644 ${CONF_DIR}/50-sysctl.conf /etc/sysctl.d/50-sysctl.conf"
     [ -f "${CONF_DIR}/kube-proxy-config.yaml" ] && exec_c "install -D -m 644 ${CONF_DIR}/kube-proxy-config.yaml ${kube_proxy_config}"
     [ -f "${CONF_DIR}/kubelet-config.yaml" ] && exec_c "install -D -m 644 ${CONF_DIR}/kubelet-config.yaml ${kubelet_config}"
@@ -574,25 +574,70 @@ function kube_service_install() {
     if [ -f "$config_yaml" ]; then
       for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
           if [ -n "$host" ]; then
-            # Pass host argument to exec_c
+            info "Installing kubernetes service files on $host"
+            
+            # Create directories
             exec_c "mkdir -p $KUBE_DIR $kubelet_dir $kube_proxy_dir /etc/sysctl.d/" "$host"
+            
+            # Copy service files
             exec_c "$SCP_COMMAND $SERVICE_DIR/*.env $host:${KUBE_DIR}/"
             exec_c "$SCP_COMMAND $SERVICE_DIR/*.service $host:$SYSTEMD_SERVICE_PATH/"
 
+            # Copy configuration files - THIS WAS MISSING kube-scheduler.yaml!
             [ -f "${CONF_DIR}/kube-proxy-config.yaml" ] && exec_c "$SCP_COMMAND $CONF_DIR/kube-proxy-config.yaml $host:$kube_proxy_config"
             [ -f "${CONF_DIR}/kubelet-config.yaml" ] && exec_c "$SCP_COMMAND $CONF_DIR/kubelet-config.yaml $host:$kubelet_config"
+            [ -f "${CONF_DIR}/kube-scheduler.yaml" ] && exec_c "$SCP_COMMAND $CONF_DIR/kube-scheduler.yaml $host:$KUBE_DIR/kube-scheduler.yaml"
             [ -f "${CONF_DIR}/50-sysctl.conf" ] && exec_c "$SCP_COMMAND $CONF_DIR/50-sysctl.conf $host:/etc/sysctl.d/"
 
+            # Load kernel modules
             exec_c "modprobe tcp_bbr || true && depmod -a" "$host"
             exec_c "modprobe sch_cake || true && depmod -a" "$host"
 
+            # Apply sysctl settings
             [ -n "$sysctl" ] && exec_c "${sysctl} --system > /dev/null" "$host"
 
+            # Set ownership
             exec_c "chown -R ${KUBE_USER}:${KUBE_GROUP} ${KUBE_DIR} ${kube_proxy_dir} ${kubelet_dir}" "$host"
           fi
       done
     fi
     info "finished kube_service_install";
+}
+
+# Alternative fix: Update setup_kube_scheduler to be more robust
+function setup_kube_scheduler() {
+    info "starting setup_kube_scheduler"
+    local ks_env="${KUBE_DIR}/kube-scheduler.env";
+    local ks_conf="${KUBE_DIR}/kube-scheduler.kubeconfig";
+    local ks_yaml="${KUBE_DIR}/kube-scheduler.yaml";
+
+    # Check if env file exists
+    if [ ! -f "$ks_env" ]; then
+      warning "kube-scheduler.env not found at ${ks_env}."
+      return
+    fi
+
+    # Check if yaml template exists, if not create a basic one
+    if [ ! -f "$ks_yaml" ]; then
+      warning "kube-scheduler.yaml not found at ${ks_yaml}, creating basic configuration."
+      cat > "$ks_yaml" <<EOF
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+clientConnection:
+  kubeconfig: "${ks_conf}"
+leaderElection:
+  leaderElect: true
+EOF
+    fi
+
+    # CLUSTER_IP is globally defined.
+    $SED -i "s~CLUSTER_ADDR~https://${CLUSTER_IP}:6443~g" "$ks_env";
+    $SED -i "s~CONFIG_YAML~${ks_yaml}~g" "$ks_env";
+
+    # Update the yaml configuration
+    yq_write ".clientConnection.kubeconfig=\"${ks_conf}\"" "$ks_yaml";
+
+    info "finished setup_kube_scheduler"
 }
 
 # Improved remote execution by passing environment variables instead of modifying files with sed
@@ -731,30 +776,223 @@ function vrrp_configure() {
 }
 
 function keepalived_configure() {
-
     info "started keepalived_configure";
-    k_conf="/etc/keepalived/keepalived.conf";
-    k_conf_dir=$(dirname $k_conf);
-    k_conf_s="$CONF_DIR/keepalived.conf";
-    prio="25";
-    auth_pass=$(openssl rand -hex 24);
-    router_id="$((1 + $RANDOM % 10))";
+    
+    # Populate peer_ips if needed
+    if [ ${#peer_ips[@]} -eq 0 ]; then
+        set_peer_ips;
+    fi
 
-    hap_conf="/etc/haproxy/haproxy.cfg";
-    exec_c "cp ./conf/haproxy.cfg ${hap_conf}";
-
-    exec_c "sed -i \"s~IP_ADDR~$CLUSTER_IP~g\" $hap_conf";
-
-    vrrp_configure "local" $prio $k_conf $auth_pass $router_id;
-    exec_c "sed -i \"s/priority .*$/priority ${prio}/g\" ${k_conf}";
-
-    backup_prio=$[$prio - "5"];
-    if [ -f $config_yaml ]; then
-        # Copy certs to additional hosts
-        for host in $(yq -r ".hosts | .[]" $config_yaml); do
-            exec_c "$SCP_COMMAND  ${hap_conf} $host:${hap_conf}";
+    
+    # Generate shared authentication password
+    local auth_pass=$(openssl rand -hex 4);  # 8 chars for keepalived
+    
+    # VRRP virtual_router_id - must be the same for all nodes (1-255)
+    local vrrp_id="51";  # Same for all nodes in this VRRP group
+    
+    # Configure HAProxy first
+    local hap_conf="/etc/haproxy/haproxy.cfg";
+    if [ -f "${CONF_DIR}/haproxy.cfg" ]; then
+        exec_c "cp ${CONF_DIR}/haproxy.cfg ${hap_conf}";
+        exec_c "sed -i \"s~IP_ADDR~${CLUSTER_IP}~g\" ${hap_conf}";
+    else
+        error_message "HAProxy template not found: ${CONF_DIR}/haproxy.cfg" 1
+        return 1
+    fi
+    
+    # Clear existing backend servers and add all control plane nodes
+    sed -i '/^\s*server k8s-api-/d' "$hap_conf"
+    
+    local counter=1
+    for host in "${!peer_ips[@]}"; do
+        local ip="${peer_ips[$host]}"
+        echo "  server k8s-api-${counter} ${ip}:6443 check" >> "$hap_conf"
+        counter=$((counter + 1))
+    done
+    
+    # Sort hosts to determine priority order consistently
+    local sorted_hosts=($(for h in "${!peer_ips[@]}"; do echo "$h"; done | sort))
+    
+    # Configure keepalived on local node
+    local hostname=$(hostname);
+    local short_hostname=$(hostname -s);  # Short hostname for router_id
+    local host_ip="${peer_ips[$hostname]}"
+    
+    if [ -z "$host_ip" ]; then
+        error_message "Cannot find IP for hostname ${hostname} in peer_ips" 1
+        return 1
+    fi
+    
+    local intf=$(ip -br -4 a sh | grep "${host_ip}" | awk '{print $1}');
+    intf="${intf%%@*}";
+    
+    if [ -z "$intf" ]; then
+        error_message "Cannot determine network interface for IP ${host_ip}" 1
+        return 1
+    fi
+    
+    # Determine VLAN interface for VIP
+    local vip_intf="$intf"
+    # Check if VIP should be on a VLAN
+    if ip -br a sh | grep -q "vlan12"; then
+        vip_intf="vlan12"
+    fi
+    
+    info "Configuring keepalived on interface ${intf} with VIP ${CLUSTER_IP} on ${vip_intf}";
+    info "Local node router_id: ${short_hostname}, VRRP ID: ${vrrp_id}";
+    
+    # Create keepalived config from template
+    local k_conf="/etc/keepalived/keepalived.conf";
+    local k_conf_template="${CONF_DIR}/keepalived.conf";
+    
+    if [ ! -f "$k_conf_template" ]; then
+        error_message "Keepalived template not found: ${k_conf_template}" 1
+        return 1
+    fi
+    
+    mkdir -p "$(dirname $k_conf)"
+    
+    # Determine state and priority for local node
+    # HIGHER priority becomes MASTER
+    local state="BACKUP"
+    local priority=90
+    
+    for i in "${!sorted_hosts[@]}"; do
+        if [ "${sorted_hosts[$i]}" = "$hostname" ]; then
+            if [ $i -eq 0 ]; then
+                state="MASTER"
+                priority=100  # Highest priority for MASTER
+            else
+                priority=$((100 - i*5))  # 100, 95, 90, 85, etc.
+            fi
+            break
+        fi
+    done
+    
+    info "Local node $hostname will be $state with priority $priority"
+    
+    # Build unicast peers list (all nodes except self)
+    local peers=""
+    for host in "${!peer_ips[@]}"; do
+        if [ "$host" != "$hostname" ]; then
+            peers="${peers}        ${peer_ips[$host]}\n"
+        fi
+    done
+    
+    # Create config from template
+    cp "$k_conf_template" "$k_conf"
+    
+    # Substitute all placeholders
+    sed -i "s/HOSTNAME/${short_hostname}/g" "$k_conf"  # router_id in global_defs
+    sed -i "s/INTERFACE/${intf}/g" "$k_conf"
+    sed -i "s/VRRP_ID/${vrrp_id}/g" "$k_conf"  # virtual_router_id in vrrp_instance
+    sed -i "s/STATE/${state}/g" "$k_conf"
+    sed -i "s/PRIO/${priority}/g" "$k_conf"
+    sed -i "s/AUTH_PASS/${auth_pass}/g" "$k_conf"
+    sed -i "s~IP_ADDR/24~${CLUSTER_IP}/24~g" "$k_conf"
+    sed -i "s~IP_ADDR_HOST~${host_ip}~g" "$k_conf"
+    sed -i "s~IP_ADDR~${CLUSTER_IP}~g" "$k_conf"
+    sed -i "s/VIP_INTERFACE/${vip_intf}/g" "$k_conf"
+    
+    # Replace PEERS placeholder with actual peer list
+    if [ -n "$peers" ]; then
+        echo -e "$peers" > /tmp/peers_list
+        sed -i "/PEERS/r /tmp/peers_list" "$k_conf"
+        sed -i "/PEERS/d" "$k_conf"
+        rm -f /tmp/peers_list
+    else
+        # If no peers (single node), remove unicast_peer block
+        sed -i '/unicast_peer {/,/}/d' "$k_conf"
+    fi
+    
+    # Configure remote nodes
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" $config_yaml); do
+            if [ -n "$host" ]; then
+                info "Configuring keepalived on ${host}";
+                
+                # Copy HAProxy config
+                exec_c "$SCP_COMMAND ${hap_conf} $host:${hap_conf}"
+                
+                # Get remote hostname for router_id
+                local remote_hostname=$($SSH_COMMAND "$host" hostname);
+                local remote_short_hostname=$($SSH_COMMAND "$host" hostname -s);
+                local remote_ip="${peer_ips[$remote_hostname]}"
+                
+                if [ -z "$remote_ip" ]; then
+                    warning "Cannot find IP for remote host ${remote_hostname}"
+                    continue
+                fi
+                
+                # Get remote interface
+                local remote_intf=$($SSH_COMMAND "$host" "ip -br -4 a sh | grep ${remote_ip} | awk '{print \$1}'");
+                remote_intf="${remote_intf%%@*}";
+                
+                # Check for VLAN interface on remote
+                local remote_vip_intf="$remote_intf"
+                if $SSH_COMMAND "$host" "ip -br a sh | grep -q vlan12"; then
+                    remote_vip_intf="vlan12"
+                fi
+                
+                # Determine remote state and priority
+                local remote_state="BACKUP"
+                local remote_priority=90
+                
+                for i in "${!sorted_hosts[@]}"; do
+                    if [ "${sorted_hosts[$i]}" = "$remote_hostname" ]; then
+                        if [ $i -eq 0 ]; then
+                            remote_state="MASTER"
+                            remote_priority=100
+                        else
+                            remote_priority=$((100 - i*5))
+                        fi
+                        break
+                    fi
+                done
+                
+                info "Remote node ${remote_hostname} (router_id: ${remote_short_hostname}) will be ${remote_state} with priority ${remote_priority}"
+                
+                # Build remote peers list
+                local remote_peers=""
+                for peer_host in "${!peer_ips[@]}"; do
+                    if [ "$peer_host" != "$remote_hostname" ]; then
+                        remote_peers="${remote_peers}        ${peer_ips[$peer_host]}\n"
+                    fi
+                done
+                
+                # Create remote config
+                local k_conf_tmp="/tmp/keepalived-${remote_hostname}.conf"
+                cp "$k_conf_template" "$k_conf_tmp"
+                
+                sed -i "s/HOSTNAME/${remote_short_hostname}/g" "$k_conf_tmp"  # Unique router_id
+                sed -i "s/INTERFACE/${remote_intf}/g" "$k_conf_tmp"
+                sed -i "s/VRRP_ID/${vrrp_id}/g" "$k_conf_tmp"  # Same VRRP ID for all
+                sed -i "s/STATE/${remote_state}/g" "$k_conf_tmp"
+                sed -i "s/PRIO/${remote_priority}/g" "$k_conf_tmp"
+                sed -i "s/AUTH_PASS/${auth_pass}/g" "$k_conf_tmp"
+                sed -i "s~IP_ADDR_HOST~${remote_ip}~g" "$k_conf_tmp"
+                sed -i "s~IP_ADDR/24~${CLUSTER_IP}/24~g" "$k_conf_tmp"
+                sed -i "s~IP_ADDR~${CLUSTER_IP}~g" "$k_conf_tmp"
+                sed -i "s/VIP_INTERFACE/${remote_vip_intf}/g" "$k_conf_tmp"
+                
+                if [ -n "$remote_peers" ]; then
+                    echo -e "$remote_peers" > /tmp/remote_peers_list
+                    sed -i "/PEERS/r /tmp/remote_peers_list" "$k_conf_tmp"
+                    sed -i "/PEERS/d" "$k_conf_tmp"
+                    rm -f /tmp/remote_peers_list
+                else
+                    sed -i '/unicast_peer {/,/}/d' "$k_conf_tmp"
+                fi
+                
+                # Copy to remote
+                exec_c "$SCP_COMMAND ${k_conf_tmp} $host:${k_conf}"
+                rm -f "$k_conf_tmp"
+                
+            fi
         done
     fi
+    
+    info "finished keepalived_configure";
 }
 
 function kube_configure() {
@@ -825,45 +1063,529 @@ function kube_configure() {
     info "finished kube_configure";
 }
 
+
+function check_etcd_data_exists() {
+    local host=${1:-"local"}
+    
+    if [ "$host" = "local" ]; then
+        [ -d "${ETCD_DATA_DIR}/member" ] && return 0 || return 1
+    else
+        $SSH_COMMAND "$host" "[ -d ${ETCD_DATA_DIR}/member ]" && return 0 || return 1
+    fi
+}
+
+function get_etcd_cluster_state() {
+    info "Checking ETCD cluster state"
+    
+    local existing_nodes=0
+    local total_nodes=1  # Count local node
+    
+    # Check local node
+    if check_etcd_data_exists "local"; then
+        existing_nodes=$((existing_nodes + 1))
+        info "Found existing ETCD data on local node"
+    fi
+    
+    # Check remote nodes
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                total_nodes=$((total_nodes + 1))
+                if check_etcd_data_exists "$host"; then
+                    existing_nodes=$((existing_nodes + 1))
+                    info "Found existing ETCD data on $host"
+                fi
+            fi
+        done
+    fi
+    
+    info "ETCD cluster state: $existing_nodes/$total_nodes nodes have existing data"
+    
+    # Return cluster state
+    if [ $existing_nodes -eq 0 ]; then
+        echo "new"
+    elif [ $existing_nodes -eq $total_nodes ]; then
+        echo "existing"
+    else
+        echo "partial"
+    fi
+}
+
+function update_etcd_cluster_state() {
+    local host=${1:-"local"}
+    local cluster_state=$2  # "new" or "existing"
+    
+    info "Setting ETCD cluster state to '$cluster_state' on $host"
+    
+    local etcd_yml="${ETCD_CONF}/etcd.conf.yml"
+    
+    if [ "$host" = "local" ]; then
+        yq_write ".\"initial-cluster-state\"=\"${cluster_state}\"" "$etcd_yml"
+    else
+        # Update remote config
+        local tmp_config="/tmp/etcd.conf.yml.${host}"
+        $SCP_COMMAND "$host:$etcd_yml" "$tmp_config"
+        yq_write ".\"initial-cluster-state\"=\"${cluster_state}\"" "$tmp_config"
+        $SCP_COMMAND "$tmp_config" "$host:$etcd_yml"
+        rm -f "$tmp_config"
+    fi
+}
+
+function wait_for_etcd_healthy() {
+    local endpoint=$1
+    local max_attempts=30
+    local attempt=1
+    
+    info "Waiting for ETCD endpoint $endpoint to become healthy"
+    
+    while [ $attempt -le $max_attempts ]; do
+        if $etcdctl --endpoints="$endpoint" \
+                   --cacert="${ETCD_PKI}/ca.crt" \
+                   --cert="${ETCD_PKI}/healthcheck-client.crt" \
+                   --key="${ETCD_PKI}/healthcheck-client.key" \
+                   endpoint health &>/dev/null; then
+            info "ETCD endpoint $endpoint is healthy"
+            return 0
+        fi
+        
+        sleep 2
+        attempt=$((attempt + 1))
+    done
+    
+    warning "ETCD endpoint $endpoint did not become healthy after $max_attempts attempts"
+    return 1
+}
+
+function start_etcd_cluster() {
+    info "Starting ETCD cluster"
+    
+    local etcdctl=$(command -v etcdctl || true)
+    if [ -z "$etcdctl" ]; then
+        warning "etcdctl not found, falling back to simple systemctl start"
+        start_etcd_simple
+        return
+    fi
+    
+    # Ensure ETCDCTL uses v3 API
+    export ETCDCTL_API=3
+    
+    # Get cluster state
+    local cluster_state=$(get_etcd_cluster_state)
+    
+    info "Cluster state determined as: $cluster_state"
+    
+    case "$cluster_state" in
+        "new")
+            start_etcd_new_cluster
+            ;;
+        "existing")
+            start_etcd_existing_cluster
+            ;;
+        "partial")
+            handle_etcd_partial_state
+            ;;
+        *)
+            error_message "Unknown cluster state: $cluster_state" 1
+            ;;
+    esac
+}
+
+function start_etcd_new_cluster() {
+    info "Starting new ETCD cluster"
+    
+    # Ensure all nodes are configured for "new" cluster
+    update_etcd_cluster_state "local" "new"
+    
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                update_etcd_cluster_state "$host" "new"
+            fi
+        done
+    fi
+    
+    # Start all ETCD nodes simultaneously for new cluster
+    info "Starting ETCD on local node"
+    exec_c "${SYSTEMCTL} start etcd"
+    
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                info "Starting ETCD on $host"
+                exec_c "${SYSTEMCTL} start etcd" "$host"
+            fi
+        done
+    fi
+    
+    # Wait for cluster to form
+    sleep 5
+    
+    # Verify cluster health
+    verify_etcd_cluster_health
+}
+
+function start_etcd_existing_cluster() {
+    info "Starting existing ETCD cluster"
+    
+    # For existing cluster, set state to "existing"
+    update_etcd_cluster_state "local" "existing"
+    
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                update_etcd_cluster_state "$host" "existing"
+            fi
+        done
+    fi
+    
+    # Start nodes one by one to avoid split-brain
+    local hostname=$(hostname)
+    local local_endpoint="https://${peer_ips[$hostname]}:2379"
+    
+    info "Starting ETCD on local node"
+    exec_c "${SYSTEMCTL} start etcd"
+    
+    # Wait for local node to be healthy
+    wait_for_etcd_healthy "$local_endpoint"
+    
+    # Start remote nodes one by one
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                info "Starting ETCD on $host"
+                exec_c "${SYSTEMCTL} start etcd" "$host"
+                
+                # Wait for remote node to join
+                local remote_hostname=$($SSH_COMMAND "$host" hostname)
+                local remote_endpoint="https://${peer_ips[$remote_hostname]}:2379"
+                wait_for_etcd_healthy "$remote_endpoint"
+            fi
+        done
+    fi
+    
+    # Verify cluster health
+    verify_etcd_cluster_health
+}
+
+function handle_etcd_partial_state() {
+    warning "ETCD cluster in partial state - some nodes have data, others don't"
+    info "This typically happens when nodes were added/removed incorrectly"
+    
+    # Check if we can form a quorum with existing nodes
+    local existing_nodes=0
+    local total_nodes=1
+    local nodes_with_data=""
+    
+    if check_etcd_data_exists "local"; then
+        existing_nodes=$((existing_nodes + 1))
+        nodes_with_data="local"
+    fi
+    
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                total_nodes=$((total_nodes + 1))
+                if check_etcd_data_exists "$host"; then
+                    existing_nodes=$((existing_nodes + 1))
+                    nodes_with_data="$nodes_with_data $host"
+                fi
+            fi
+        done
+    fi
+    
+    local quorum=$((total_nodes / 2 + 1))
+    
+    if [ $existing_nodes -ge $quorum ]; then
+        info "Have quorum with $existing_nodes nodes, attempting to recover cluster"
+        
+        # Start nodes with existing data first
+        if echo "$nodes_with_data" | grep -q "local"; then
+            update_etcd_cluster_state "local" "existing"
+            exec_c "${SYSTEMCTL} start etcd"
+        fi
+        
+        for host in $nodes_with_data; do
+            if [ "$host" != "local" ]; then
+                update_etcd_cluster_state "$host" "existing"
+                exec_c "${SYSTEMCTL} start etcd" "$host"
+            fi
+        done
+        
+        # Wait for cluster to stabilize
+        sleep 5
+        
+        # Now add nodes without data as new members
+        add_missing_etcd_members
+        
+    else
+        error_message "Cannot form quorum with only $existing_nodes/$total_nodes nodes having data. Manual intervention required." 1
+        info "Options:"
+        info "1. If data is not important: Clean all nodes with 'rm -rf ${ETCD_DATA_DIR}' and start fresh"
+        info "2. If data is important: Restore from backup or recover manually"
+        return 1
+    fi
+}
+
+function add_missing_etcd_members() {
+    info "Adding nodes without data as new cluster members"
+    
+    # Build endpoints list from running nodes
+    local endpoints=""
+    if [ ${#peer_ips[@]} -eq 0 ]; then
+        set_peer_ips;
+    fi
+    
+    for host in "${!peer_ips[@]}"; do
+        if check_etcd_data_exists "$host" || [ "$host" = "$(hostname)" -a -d "${ETCD_DATA_DIR}/member" ]; then
+            if [ -n "$endpoints" ]; then
+                endpoints="${endpoints},"
+            fi
+            endpoints="${endpoints}https://${peer_ips[$host]}:2379"
+        fi
+    done
+    
+    export ETCDCTL_ENDPOINTS="$endpoints"
+    export ETCDCTL_CACERT="${ETCD_PKI}/ca.crt"
+    export ETCDCTL_CERT="${ETCD_PKI}/healthcheck-client.crt"
+    export ETCDCTL_KEY="${ETCD_PKI}/healthcheck-client.key"
+    
+    # Add nodes without data
+    local hostname=$(hostname)
+    
+    if ! check_etcd_data_exists "local"; then
+        info "Adding local node as new member"
+        $etcdctl member add "$hostname" --peer-urls="https://${peer_ips[$hostname]}:2380"
+        
+        # Update config for existing cluster member
+        update_etcd_cluster_state "local" "existing"
+        exec_c "${SYSTEMCTL} start etcd"
+    fi
+    
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ] && ! check_etcd_data_exists "$host"; then
+                local remote_hostname=$($SSH_COMMAND "$host" hostname)
+                info "Adding $remote_hostname as new member"
+                
+                $etcdctl member add "$remote_hostname" --peer-urls="https://${peer_ips[$remote_hostname]}:2380"
+                
+                update_etcd_cluster_state "$host" "existing"
+                exec_c "${SYSTEMCTL} start etcd" "$host"
+            fi
+        done
+    fi
+}
+
+function verify_etcd_cluster_health() {
+    info "Verifying ETCD cluster health"
+    
+    local etcdctl=$(command -v etcdctl || true)
+    if [ -z "$etcdctl" ]; then
+        warning "etcdctl not found, cannot verify cluster health"
+        return
+    fi
+    
+    # Build endpoints list
+    local endpoints=""
+    if [ ${#peer_ips[@]} -eq 0 ]; then
+        set_peer_ips;
+    fi
+    
+    for host in "${!peer_ips[@]}"; do
+        if [ -n "$endpoints" ]; then
+            endpoints="${endpoints},"
+        fi
+        endpoints="${endpoints}https://${peer_ips[$host]}:2379"
+    done
+    
+    export ETCDCTL_API=3
+    export ETCDCTL_ENDPOINTS="$endpoints"
+    export ETCDCTL_CACERT="${ETCD_PKI}/ca.crt"
+    export ETCDCTL_CERT="${ETCD_PKI}/healthcheck-client.crt"
+    export ETCDCTL_KEY="${ETCD_PKI}/healthcheck-client.key"
+    
+    # Check endpoint health
+    info "Endpoint health check:"
+    $etcdctl endpoint health
+    
+    # Check member list
+    info "Cluster members:"
+    $etcdctl member list
+    
+    # Check endpoint status
+    info "Endpoint status:"
+    $etcdctl endpoint status --write-out=table
+}
+
+function start_etcd_simple() {
+    info "Starting ETCD with simple systemctl (no cluster coordination)"
+    
+    exec_c "${SYSTEMCTL} start etcd"
+    
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                exec_c "${SYSTEMCTL} start etcd" "$host"
+            fi
+        done
+    fi
+}
+
+function stop_etcd_cluster() {
+    info "starting graceful ETCD cluster shutdown";
+    
+    local etcdctl=$(command -v etcdctl || true)
+    if [ -z "$etcdctl" ]; then
+        warning "etcdctl not found, falling back to systemctl stop"
+        exec_c "${SYSTEMCTL} stop etcd"
+        if [ -f "$config_yaml" ]; then
+            for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+                [ -n "$host" ] && exec_c "${SYSTEMCTL} stop etcd" "$host"
+            done
+        fi
+        return
+    fi
+    
+    # Build ETCD endpoints list
+    local endpoints=""
+    if [ ${#peer_ips[@]} -eq 0 ]; then
+        set_peer_ips;
+    fi
+    
+    for host in "${!peer_ips[@]}"; do
+        if [ -n "$endpoints" ]; then
+            endpoints="${endpoints},"
+        fi
+        endpoints="${endpoints}https://${peer_ips[$host]}:2379"
+    done
+    
+    # Set ETCD client environment
+    export ETCDCTL_API=3
+    export ETCDCTL_ENDPOINTS="$endpoints"
+    export ETCDCTL_CACERT="${ETCD_PKI}/ca.crt"
+    export ETCDCTL_CERT="${ETCD_PKI}/healthcheck-client.crt"
+    export ETCDCTL_KEY="${ETCD_PKI}/healthcheck-client.key"
+    
+    # Check cluster health before shutdown
+    info "Checking ETCD cluster health before shutdown"
+    $etcdctl endpoint health || warning "Some ETCD endpoints unhealthy"
+    
+    # Get member list
+    local members=$($etcdctl member list --write-out=json | jq -r '.members[].name')
+    
+    # Transfer leadership if possible (for the current leader)
+    local hostname=$(hostname)
+    local leader_id=$($etcdctl endpoint status --write-out=json | jq -r '.[] | select(.Status.leader == .Status.header.member_id) | .Status.header.member_id')
+    
+    if [ -n "$leader_id" ]; then
+        info "Current leader ID: $leader_id"
+        # Try to move leader before shutdown
+        local non_leader=$($etcdctl endpoint status --write-out=json | jq -r '.[] | select(.Status.leader != .Status.header.member_id) | .Status.header.member_id' | head -1)
+        if [ -n "$non_leader" ]; then
+            info "Attempting to transfer leadership to member $non_leader"
+            $etcdctl move-leader "$non_leader" || warning "Leadership transfer failed"
+            sleep 2
+        fi
+    fi
+    
+    # Stop ETCD on all nodes gracefully
+    info "Stopping ETCD services on all nodes"
+    
+    # Stop local ETCD
+    exec_c "${SYSTEMCTL} stop etcd"
+    
+    # Stop remote ETCD nodes
+    if [ -f "$config_yaml" ]; then
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            if [ -n "$host" ]; then
+                info "Stopping ETCD on $host"
+                exec_c "${SYSTEMCTL} stop etcd" "$host"
+            fi
+        done
+    fi
+    
+    info "finished graceful ETCD cluster shutdown";
+}
+
+# Updated manage_services to use the new ETCD start function
 function manage_services() {
     local _s=${1:-stop};
     info "started manage_services ${_s}";
 
     if [ -z "$SYSTEMCTL" ]; then
-      warning "systemctl not found, cannot manage services."
-      return
+        warning "systemctl not found, cannot manage services."
+        return
     fi
 
     local sys_reload="${SYSTEMCTL} daemon-reload";
     exec_c "${sys_reload}"
 
     if [ -f "$config_yaml" ]; then
-      for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
-          [ -n "$host" ] && exec_c "${sys_reload}" "$host"
-      done
+        for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+            [ -n "$host" ] && exec_c "${sys_reload}" "$host"
+        done
     fi
 
-    # Define service order
-    local services
     if [ "$_s" = "start" ]; then
-      # Start order: Runtimes -> Infrastructure -> Kubelet/Proxy -> Control Plane
-      services=("containerd" "etcd" "keepalived" "kubelet" "kube-proxy" "kube-apiserver" "kube-scheduler" "kube-controller-manager");
-    else
-      # Stop order (reverse)
-      services=("kube-controller-manager" "kube-scheduler" "kube-apiserver" "kube-proxy" "kubelet" "keepalived" "etcd" "containerd");
-    fi
-
-    for service in "${services[@]}"; do
-        debug "manage_services ${_s} ${service}";
-        # Execute sequentially to respect dependencies
-        exec_c "${SYSTEMCTL} $_s ${service}"
-
+        # Start containerd first
+        exec_c "${SYSTEMCTL} start containerd" || warning "Failed to start containerd"
         if [ -f "$config_yaml" ]; then
-          for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
-              [ -n "$host" ] && exec_c "${SYSTEMCTL} ${_s} ${service}" "$host"
-          done
+            for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+                [ -n "$host" ] && exec_c "${SYSTEMCTL} start containerd" "$host" || warning "Failed to start containerd on $host"
+            done
         fi
-    done
+        
+        # Start ETCD cluster with proper coordination
+        start_etcd_cluster
+        
+        # Start remaining services
+        local services=("haproxy" "keepalived" "kubelet" "kube-proxy" "kube-apiserver" "kube-scheduler" "kube-controller-manager")
+        for service in "${services[@]}"; do
+            if $SYSTEMCTL list-unit-files | grep -q "^${service}.service"; then
+                exec_c "${SYSTEMCTL} start ${service}" || warning "Failed to start ${service}"
+            fi
+            
+            if [ -f "$config_yaml" ]; then
+                for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+                    if [ -n "$host" ]; then
+                        if $SSH_COMMAND "$host" "$SYSTEMCTL list-unit-files | grep -q '^${service}.service'"; then
+                            exec_c "${SYSTEMCTL} start ${service}" "$host" || warning "Failed to start ${service} on $host"
+                        fi
+                    fi
+                done
+            fi
+        done
+    else
+        # Stop order
+        local services=("kube-controller-manager" "kube-scheduler" "kube-apiserver" "kube-proxy" "kubelet" "keepalived" "haproxy")
+        for service in "${services[@]}"; do
+            if $SYSTEMCTL list-unit-files | grep -q "^${service}.service"; then
+                exec_c "${SYSTEMCTL} stop ${service}" || warning "Failed to stop ${service}"
+            fi
+            
+            if [ -f "$config_yaml" ]; then
+                for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+                    if [ -n "$host" ]; then
+                        if $SSH_COMMAND "$host" "$SYSTEMCTL list-unit-files | grep -q '^${service}.service'"; then
+                            exec_c "${SYSTEMCTL} stop ${service}" "$host" || warning "Failed to stop ${service} on $host"
+                        fi
+                    fi
+                done
+            fi
+        done
+        
+        # Stop ETCD cluster gracefully
+        stop_etcd_cluster
+        
+        # Stop containerd last
+        exec_c "${SYSTEMCTL} stop containerd" || true
+        if [ -f "$config_yaml" ]; then
+            for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
+                [ -n "$host" ] && exec_c "${SYSTEMCTL} stop containerd" "$host" || true
+            done
+        fi
+    fi
+    
     info "finished manage_services ${_s}";
 }
 
