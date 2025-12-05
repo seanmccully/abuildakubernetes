@@ -2,11 +2,7 @@
 san:
   country: US
   domains:
-    - .silverstars.io
-    - .local.silverstars.io
-    - .default
-    - .default.svc
-    - .default.svc.cluster
+    - .cluster.local
     - .default.svc.cluster.local
   email: sean_mccully@yahoo.com
   locality: Silverlake
@@ -37,8 +33,8 @@ certs:
       - kube-etcd
       - kube-etcd-peer
     kubernetes:
-      - apiserver
-      - calico-typha
+      - kubernetes
+      - cilium
 
 
 # Defines which generated certificates to install into the PKI directory
@@ -49,7 +45,7 @@ certs:
 install_map:
   kubernetes:
     # API Server components
-    apiserver: "apiserver"
+    kubernetes: "apiserver"
     apiserver-kubelet-client: "apiserver-kubelet-client"
     # Service Account (Special case: installs .key and generates .pub)
     service-accounts: "sa"
@@ -58,7 +54,7 @@ install_map:
     kube-etcd: "etcd/server"
     kube-etcd-peer: "etcd/peer"
     healthcheck-client: "etcd/healthcheck-client"
-    # Clients that need access to ETCD (e.g., API Server). Installed in root PKI dir.
+    # Clients that need access to ETCD (e.g., API Server). Installed in root PKI-dir.
     apiserver-etcd-client: "apiserver-etcd-client"
   kubernetes-front-proxy:
     # Front Proxy Client

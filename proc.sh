@@ -223,94 +223,99 @@ function install_certs() {
 function provision_calico() {
     info "started provision_calico";
     # CLUSTER_CIDR is used in calico_etcd_manifests
-}
+    local src="$SRC_DIR/calico";
+	pushd $src;
+
+    pushd ./manifests >/dev/null || { error_message "Failed to change directory to ./manifests" 1; return 1; }
+    HELM_C=$(command -v helm); 
+    if [ -x "$HELM_C" ]; then
+      # This relies on etcd_cluster_ips being defined/sourced (e.g., from common.sh or similar)
+	  local cluster="";
+      if [ ! -n "${peer_ip+defined}" ]; then
+	  		  set_peer_ips;
+	  elif [ ${#peer_ips[@]} -eq 0 ]; then
+			  set_peer_ips;
+	  fi
+
+	  for host in "${!peer_ips[@]}"; do
+			cluster+="https://${peer_ips[$host]}:2379,";
+	  done
+	  cluster="${cluster::-1}";
 
 
-function calico_etcd_manifests() {
-    info "started calico_manifests";
+      # Ensure YQ is available
+      if [ -z "$YQ" ] || [ ! -x "$YQ" ]; then
+          warning "YQ utility not found or not executable. Skipping manifest customization."
+      else
+          val_yml="../charts/calico/values.yaml";
+          local etcd_cert=$(cat "${CERT_DIR}/etcd/certs/kube-etcd-peer.cert.pem")
+          local etcd_key=$(cat "${CERT_DIR}/etcd/private/kube-etcd-peer.key.pem")
+          local etcd_ca=$(cat "${CERT_DIR}/etcd/certs/etcd.cert.pem")
+          yq_write '.datastore="etcd"' $val_yml
+          yq_write '.etcd.tls.crt = $val' "$val_yml" "$etcd_cert"
+          yq_write '.etcd.tls.key = $val' "$val_yml" "$etcd_key"
+          yq_write '.etcd.tls.ca = $val' "$val_yml" "$etcd_ca"
+          yq_write '.network="calico"' $val_yml
+          yq_write '.bpf=true' $val_yml
+          yq_write '.includeCRDs=false' $val_yml
 
-    local chart_values="${CALICO_SRC}/charts/calico/values.yaml";
-    local calico_manifests="${CALICO_SRC}/manifests";
-    local pool_yaml="/tmp/ippool.yaml"
-
-    local calicoctl
-    calicoctl=$(command -v calicoctl);
-    local kubectl
-    kubectl=$(command -v kubectl);
-
-    if [ -z "$calicoctl" ] || [ -z "$kubectl" ]; then
-      error_message "calicoctl or kubectl not found." 1
-      return 1
-    fi
-
-    export GOROOT="${GOROOT}";
-    export PATH="${GOROOT}/bin:${PATH}";
-
-    # Install goimports if go is available
-    if command -v go >/dev/null 2>&1; then
-      go install golang.org/x/tools/cmd/goimports@latest || warning "Failed to install goimports"
-    fi
-
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-        set_peer_ips;
-    fi
-    local hostname
-    hostname=$(hostname)
-    local host_ip="${peer_ips[$hostname]}"
-
-    local intf
-    intf=$(ip -br -4 a sh | grep "${host_ip}" | awk '{print $1}');
-    intf="${intf%%@*}"; # Remove potential trailing characters
-
-    if [ -z "$intf" ]; then
-      error_message "Could not determine network interface for IP ${host_ip}" 1
-      return 1
-    fi
-
-    local mtu
-    mtu=$(cat "/sys/class/net/${intf}/mtu");
-
-    local cluster
-    cluster=$(etcd_cluster_ips);
-
-    # Read certificate contents and export as environment variables
-
-    local etcd_cert=$(cat "${ETCD_PKI}/peer.crt")
-    local etcd_key=$(cat "${ETCD_PKI}/peer.key")
-    local etcd_ca=$(cat "${ETCD_PKI}/ca.crt")
-
-    if [ ! -f "$chart_values" ]; then
-      warning "Calico chart values file not found: ${chart_values}"
-      return 1
-    fi
-
-	yq_write ".mtu=\"${mtu}\"" "$chart_values";
-	yq_write ".etcd.endpoints=\"${cluster}\"" "$chart_values";
-    yq_write '.etcd.tls.crt = $val' "$chart_values" "$etcd_cert"
-    yq_write '.etcd.tls.key = $val' "$chart_values" "$etcd_key"
-    yq_write '.etcd.tls.ca = $val' "$chart_values" "$etcd_ca"
-
-
-    # Generate manifests (if go and necessary tools are available)
-    if command -v go >/dev/null 2>&1; then
-      pushd "${CALICO_SRC}/calicoctl/calicoctl/commands/crds" >/dev/null && go generate && popd >/dev/null
-      if command -v goimports >/dev/null 2>&1; then
-        pushd "${CALICO_SRC}" >/dev/null && find . -iname "*.go" ! -wholename "./vendor/*" | xargs goimports -w -local github.com/projectcalico/calico/ && popd >/dev/null
+          yq_write ".etcd.endpoints=\"${cluster}\"" $val_yml
+          yq_write ".tigeraOperator.image=\"tigera\/operator\"" $val_yml
+          yq_write ".tigeraOperator.registry=\"quay.io\"" $val_yml
+          yq_write ".tigeraOperator.version=\"master\"" $val_yml
+          # Ensure YQ and HELM paths are correctly passed if they are custom variables
+          # exec_c "YQ=\"${YQ}\" HELM=\"${HELM_C}\" ./generate.sh";
+		  local REGISTRY=quay.io;
+          local GIT_VERSION=$($git describe --tags --dirty --always --abbrev=12);
+          local CALICO_VERSION=$GIT_VERSION;
+		  exec_c """
+				cat <<EOF > tigera-operator.yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tigera-operator
+  labels:
+    name: tigera-operator
+    pod-security.kubernetes.io/enforce: privileged
+EOF
+		  """;
+          exec_c """
+				${HELM_C} -n tigera-operator template \
+						--no-hooks \
+						--set installation.enabled=false \
+						--set apiServer.enabled=false \
+						--set whisker.enabled=false \
+						--set goldmane.enabled=false \
+						--set calicoctl.tag=$CALICO_VERSION \
+						--set calicoctl.image=$REGISTRY/ctl \
+						../charts/tigera-operator >> tigera-operator.yaml
+          """;
+		  exec_c """
+				${HELM_C} template ../charts/calico \
+					--include-crds \
+					--set version=$CALICO_VERSION \
+					--set node.registry=$REGISTRY \
+					--set calicoctl.registry=$REGISTRY \
+					--set typha.registry=$REGISTRY \
+					--set cni.registry=$REGISTRY \
+					--set kubeControllers.registry=$REGISTRY \
+					--set flannel.registry=$REGISTRY \
+					--set flannelMigration.registry=$REGISTRY \
+					--set dikastes.registry=$REGISTRY \
+					--set csi-driver.registry=$REGISTRY \
+				-f ../charts/calico/values.yaml > all.yaml
+			""";
+		  exec_c """ yq -y 'select(.kind != "CustomResourceDefinition")' all.yaml > charts.yaml """;
+		  exec_c """ yq -y 'select(.kind == "CustomResourceDefinition")' all.yaml > crds.yaml """;
+		  exec_c "rm all.yaml";
+		  exec_c """
+			for FILE in \$(find ../charts/values -type f -name '*.yaml');do ${HELM_C} -n kube-system template ../charts/calico --set version=$CALICO_VERSION -f \$FILE > $(basename \$FILE); done
+		""";
       fi
-      pushd "${CALICO_SRC}" >/dev/null && make gen-manifests && popd >/dev/null
+    else
+      warning "Helm not found, skipping manifest generation."
     fi
-
-    # Apply manifests
-    export KUBECONFIG=${KUBECONFIG:-"/root/.kube/config"};
-
-    if [ ! -f "$KUBECONFIG" ]; then
-      warning "Kubeconfig file not found: ${KUBECONFIG}, skipping Calico deployment."
-      return 1
-    fi
-
-    if [ -f "${calico_manifests}/crds.yaml" ]; then
-      exec_c "${kubectl} apply -f ${calico_manifests}/crds.yaml"
-    fi
+    popd >/dev/null
 
     # Create IP Pool
     cat > "$pool_yaml" <<EOF
@@ -326,11 +331,13 @@ spec:
   nodeSelector: all()
 EOF
 
-   exec_c "${calicoctl} create -f ${pool_yaml}"
 
-   if [ -f "${calico_manifests}/calico-etcd.yaml" ]; then
-    exec_c "${kubectl} apply -f ${calico_manifests}/calico-etcd.yaml"
-   fi
+   exec_c "${kubectl} apply -f manifests/crds.yaml"
+   exec_c "${calicoctl} create -f ${pool_yaml}"
+   exec_c "${kubectl} apply -f manifests/charts.yaml"
+
+   popd >/dev/null
+   info "finished calico_manifests";
 }
 
 function kubeconfig() {
@@ -743,7 +750,11 @@ function ha_proxy_configure() {
 
 function vrrp_configure() {
 
-     set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
+    fi
      host=${1:-"local"};
      prio=${2:-"30"};
      k_conf=${3};
@@ -779,11 +790,12 @@ function keepalived_configure() {
     info "started keepalived_configure";
     
     # Populate peer_ips if needed
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-        set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
     fi
 
-    
     # Generate shared authentication password
     local auth_pass=$(openssl rand -hex 4);  # 8 chars for keepalived
     
@@ -1331,8 +1343,10 @@ function add_missing_etcd_members() {
     
     # Build endpoints list from running nodes
     local endpoints=""
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-        set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
     fi
     
     for host in "${!peer_ips[@]}"; do
@@ -1387,8 +1401,10 @@ function verify_etcd_cluster_health() {
     
     # Build endpoints list
     local endpoints=""
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-        set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
     fi
     
     for host in "${!peer_ips[@]}"; do
@@ -1448,8 +1464,10 @@ function stop_etcd_cluster() {
     
     # Build ETCD endpoints list
     local endpoints=""
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-        set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
     fi
     
     for host in "${!peer_ips[@]}"; do
@@ -1535,21 +1553,18 @@ function manage_services() {
             done
         fi
         
-        # Start ETCD cluster with proper coordination
-        start_etcd_cluster
-        
         # Start remaining services
-        local services=("haproxy" "keepalived" "kubelet" "kube-proxy" "kube-apiserver" "kube-scheduler" "kube-controller-manager")
+        local services=("etcd" "haproxy" "kubelet" "kube-proxy" "kube-apiserver" "kube-scheduler" "kube-controller-manager")
         for service in "${services[@]}"; do
             if $SYSTEMCTL list-unit-files | grep -q "^${service}.service"; then
-                exec_c "${SYSTEMCTL} start ${service}" || warning "Failed to start ${service}"
+                exec_c "${SYSTEMCTL} start ${service}&" || warning "Failed to start ${service}"
             fi
             
             if [ -f "$config_yaml" ]; then
                 for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
                     if [ -n "$host" ]; then
                         if $SSH_COMMAND "$host" "$SYSTEMCTL list-unit-files | grep -q '^${service}.service'"; then
-                            exec_c "${SYSTEMCTL} start ${service}" "$host" || warning "Failed to start ${service} on $host"
+                            exec_c "${SYSTEMCTL} start ${service}&" "$host" || warning "Failed to start ${service} on $host"
                         fi
                     fi
                 done
@@ -1557,35 +1572,27 @@ function manage_services() {
         done
     else
         # Stop order
-        local services=("kube-controller-manager" "kube-scheduler" "kube-apiserver" "kube-proxy" "kubelet" "keepalived" "haproxy")
+        local services=("kube-controller-manager" "kube-scheduler" "kube-apiserver" "kube-proxy" "kubelet" "haproxy" "etcd")
         for service in "${services[@]}"; do
             if $SYSTEMCTL list-unit-files | grep -q "^${service}.service"; then
-                exec_c "${SYSTEMCTL} stop ${service}" || warning "Failed to stop ${service}"
+                exec_c "${SYSTEMCTL} stop ${service}&" || warning "Failed to stop ${service}"
             fi
             
             if [ -f "$config_yaml" ]; then
                 for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
                     if [ -n "$host" ]; then
                         if $SSH_COMMAND "$host" "$SYSTEMCTL list-unit-files | grep -q '^${service}.service'"; then
-                            exec_c "${SYSTEMCTL} stop ${service}" "$host" || warning "Failed to stop ${service} on $host"
+                            exec_c "${SYSTEMCTL} stop ${service}&" "$host" || warning "Failed to stop ${service} on $host"
                         fi
                     fi
                 done
             fi
         done
-        
-        # Stop ETCD cluster gracefully
-        stop_etcd_cluster
-        
-        # Stop containerd last
-        exec_c "${SYSTEMCTL} stop containerd" || true
-        if [ -f "$config_yaml" ]; then
-            for host in $(yq_read ".hosts | .[]?" "$config_yaml"); do
-                [ -n "$host" ] && exec_c "${SYSTEMCTL} stop containerd" "$host" || true
-            done
-        fi
+
     fi
-    
+    info "waiting manage_services to ${_s}";
+    wait; 
+
     info "finished manage_services ${_s}";
 }
 
@@ -1645,6 +1652,11 @@ function main() {
     info "started main";
     # Setup trap
     trap trap_sigint INT
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
+    fi
 
     if [ "$CLEAN" = "true" ]; then
       info "Running cleanup..."
@@ -1656,8 +1668,6 @@ function main() {
       info "Stopping services..."
       stop_services;
     fi
-
-    set_peer_ips;
 
     if [ "$BUILD_SOURCE" = "true" ]; then
       info "Running source-builder.sh..."
@@ -1671,7 +1681,6 @@ function main() {
       exec_script "cert-manager.sh" false
     fi
 
-    keepalived_configure;
     kube_configure;
 
     if [ "$RUN_SETUP" = "true" ]; then
@@ -1731,4 +1740,10 @@ while true; do
   esac
 done
 
-main;
+#main;
+host="sombrero.local.silverstars.io"
+ca_cert="${PKI_DIR}/ca.crt"
+kubelet_crt_src="$CERT_DIR/kubernetes/certs/$host.cert.pem";
+kubelet_key_src="$CERT_DIR/kubernetes/private/$host.key.pem";
+kubelet_config_tmp="/tmp/kubelet-config-$host";
+kubeconfig "$kubelet_config_tmp" "system:node:${host}" "$ca_cert" "$kubelet_crt_src" "$kubelet_key_src"

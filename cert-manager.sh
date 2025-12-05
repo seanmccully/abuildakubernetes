@@ -17,6 +17,72 @@ source "${_path}/common.sh";
 dns_alts="";
 ip_alts="";
 
+function configureAlts() {
+    local node_name=${1:-false};
+    local is_host=${2:-false};
+    info "starting configureAlts $node_name";
+
+    local service_net_ip
+    service_net_ip=$(${python} -c "import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])")
+
+    ip_alts="IP:127.0.0.1,IP:${CLUSTER_IP},IP:${service_net_ip}";
+    dns_alts="DNS:localhost";
+
+    info "starting configureAlts $node_name";
+
+    local service_net_ip
+    service_net_ip=$(${python} -c "import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])")
+
+    ip_alts="IP:127.0.0.1,IP:${CLUSTER_IP},IP:${service_net_ip}"
+    dns_alts="DNS:localhost"
+
+    if [ -f "$hosts_yaml" ]; then
+        if [ "$is_host" != "false" ]; then
+            # Specific node - only add IPs/names for that node
+            for ip in $(yq_read ".\"${node_name}\".ips | .[]?" "$hosts_yaml"); do
+                [[ -n "$ip" && "${ip}" != "127.0.0.1" ]] && ip_alts="${ip_alts},IP:${ip}"
+            done
+
+            # Add the full hostname
+            dns_alts="${dns_alts},DNS:${node_name}"
+
+            # Extract short hostname (e.g., 'bodes' from 'bodes.local.silverstars.io')
+            local short_host="${node_name%%.*}"
+
+            # Add short hostname with each domain suffix from hosts.yaml
+            for domain in $(yq_read ".\"${node_name}\".domains | .[]?" "$hosts_yaml"); do
+                [[ -n "$domain" ]] && dns_alts="${dns_alts},DNS:${short_host}${domain}"
+            done
+        else
+            # All nodes (e.g., for kubernetes API server cert)
+            for host in $(yq_read "keys | .[]?" "$hosts_yaml"); do
+                [[ -z "$host" ]] && continue
+
+                for ip in $(yq_read ".\"${host}\".ips | .[]?" "$hosts_yaml"); do
+                    [[ -n "$ip" && "${ip}" != "127.0.0.1" ]] && ip_alts="${ip_alts},IP:${ip}"
+                done
+
+                dns_alts="${dns_alts},DNS:${host}"
+
+                local short_host="${host%%.*}"
+                for domain in $(yq_read ".\"${host}\".domains | .[]?" "$hosts_yaml"); do
+                    [[ -n "$domain" ]] && dns_alts="${dns_alts},DNS:${short_host}${domain}"
+                done
+            done
+
+            # Add kubernetes service DNS names using certs.yaml san.domains
+            dns_alts="${dns_alts}"
+            if [ -f "$CERTS_YAML" ]; then
+                for domain in $(yq_read ".san.domains | .[]?" "$CERTS_YAML"); do
+                    [[ -n "$domain"  ]] && dns_alts="${dns_alts},DNS:${node_name}${domain}"
+                done
+            fi
+        fi
+    fi
+
+    info "finished configureAlts: ${ip_alts} ${dns_alts}";
+
+}
 
 function create_intermediate_ca() {
     local intermediate=$1;
@@ -25,9 +91,9 @@ function create_intermediate_ca() {
     # Define paths using CERT_DIR explicitly (absolute paths)
     # Ensure base_dir definition is correct for the intermediate CA's home
     local base_dir="${CERT_DIR}/${intermediate}"
-    local key_file="${base_dir}/private/${intermediate}.key.pem";
-    local csr_file="${base_dir}/csr/${intermediate}.csr.pem";
-    local cert_file="${base_dir}/certs/${intermediate}.cert.pem";
+    local key_file="${base_dir}/private/ca.key.pem";
+    local csr_file="${base_dir}/csr/ca.csr.pem";
+    local cert_file="${base_dir}/certs/ca.cert.pem";
 
     if [ -e "$cert_file" ]; then
         warning "OpenSSL create_intermediate_ca ${intermediate} CA already exists";
@@ -194,7 +260,7 @@ function create_ca() {
     local state=$(yq_read '.san.state' "$CERTS_YAML");
     local locality=$(yq_read '.san.locality' "$CERTS_YAML");
     local email=$(yq_read '.san.email' "$CERTS_YAML");
-    local subj="/C=${country}/ST=${state}/L=${locality}/O=kubernetes/OU=kubernetes/CN=ca/emailAddress=${email}";
+    local subj="/C=${country}/ST=${state}/L=${locality}/O=kubernetes/OU=silverstars.io/CN=ca/emailAddress=${email}";
 
     # Generate Root CA Key (encrypted)
     # PASS_FILE is absolute, key_file is relative.
@@ -246,86 +312,6 @@ function certHandler() {
     writeConfig "$component" "$intermediate" "$cert_type" "$prefix";
 }
 
-function configureAlts() {
-    local node_name=${1:-false};
-
-    info "starting configureAlts $node_name";
-    # Calculate the first IP in the service network
-    # Execute python directly to capture output
-    local service_net_ip
-    service_net_ip=$(${python} -c "import ipaddress;print(ipaddress.IPv4Network('${SERVICE_CIDR}')[1])")
-
-    # Initialize global variables ip_alts and dns_alts
-    ip_alts="IP:127.0.0.1";
-    ip_alts="${ip_alts},IP:${CLUSTER_IP}";
-    ip_alts="${ip_alts},IP:${service_net_ip}";
-    dns_alts="DNS:localhost";
-
-    # If generating for a specific node/component that needs extensive SANs
-    if [ "$node_name" != "false" ]; then
-        if [ -f "$hosts_yaml" ]; then
-            # Add IPs from hosts_yaml
-            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
-                if [ "$host" == "$node_name" ]; then
-                    for ip in $(yq_read ".\"${host}\" | .[]" "$hosts_yaml"); do
-                        if [[ "${ip}" != "127.0.0.1" ]]; then
-                            ip_alts="${ip_alts},IP:${ip}";
-                        fi
-                    done
-                fi
-            done
-
-            dns_alts="${dns_alts},DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc";
-			if [ -n "${CLUSTER_DOMAIN:-}" ]; then
-            	dns_alts="${dns_alts},DNS:kubernetes.default.svc.${CLUSTER_DOMAIN}"
-        	fi
-            # Add DNS names from hosts_yaml and domains from CERTS_YAML
-            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
-                if [ "$host" == "$node_name" ]; then
-                    dns_alts="${dns_alts},DNS:${host}";
-                    if [ -f "$CERTS_YAML" ]; then
-                        for domains in $(yq_read ".san.domains | .[]? " "$CERTS_YAML"); do
-                            if [ -n "$domains" ]; then
-                                dns_alts="${dns_alts},DNS:${host}${domains}";
-                            fi
-                        done
-                    fi
-                fi
-            done
-        fi
-    else
-        if [ -f "$hosts_yaml" ]; then
-            # Add IPs from hosts_yaml
-            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
-                for ip in $(yq_read ".\"${host}\" | .[]" "$hosts_yaml"); do
-                    if [[ "${ip}" != "127.0.0.1" ]]; then
-                        ip_alts="${ip_alts},IP:${ip}";
-                    fi
-                done
-            done
-
-            dns_alts="${dns_alts},DNS:kubernetes,DNS:kubernetes.default,DNS:kubernetes.default.svc";
-			if [ -n "${CLUSTER_DOMAIN:-}" ]; then
-            	dns_alts="${dns_alts},DNS:kubernetes.default.svc.${CLUSTER_DOMAIN}"
-        	fi
-            # Add DNS names from hosts_yaml and domains from CERTS_YAML
-            for host in $(yq_read "keys | .[]" "$hosts_yaml"); do
-                dns_alts="${dns_alts},DNS:${host}";
-                if [ -f "$CERTS_YAML" ]; then
-                    # Use .[]? to handle potentially missing domains list
-                    for domains in $(yq_read ".san.domains | .[]? " "$CERTS_YAML"); do
-                        if [ -n "$domains" ]; then
-                            dns_alts="${dns_alts},DNS:${host}${domains}";
-                        fi
-                    done
-                fi
-            done
-        fi
-    fi
-    info "finished configureAlts $node_name ${ip_alts} ${dns_alts}";
-}
-
-
 function writeConfig() {
     local component=$1;
     local intermediate=$2;
@@ -355,27 +341,27 @@ function writeConfig() {
 
     # Configure Subject Alternative Names (SANs) and set O/CN for specific Kubernetes components
     if [[ "$prefix" == "system:masters" ]]; then
-        configureAlts "$component"
+        configureAlts "$component" true
         orgName="${prefix}";
         cn="${component}";  # For masters, use component name directly
     elif [[ "$prefix" == "system:nodes" ]]; then
-        configureAlts "$component"
+        configureAlts "$component" true
         orgName="${prefix}";
         cn="system:node:${component}";  # Required format for Node authorization
     elif [[ "$component" == "kube-proxy" ]]; then
-        configureAlts
+        configureAlts $component true;
         orgName="system:node-proxier";  # Group for kube-proxy
         cn="system:kube-proxy";  # Standard name for kube-proxy
     elif [[ "$component" == "kube-scheduler" ]]; then
-        configureAlts
+        configureAlts $component false;
         orgName="system:kube-scheduler";  # Correct group for scheduler
         cn="system:kube-scheduler";  # Standard name for scheduler
     elif [[ "$component" == "kube-controller-manager" ]]; then
-        configureAlts
+        configureAlts $component false;
         orgName="system:kube-controller-manager";  # Correct group for controller-manager
         cn="system:kube-controller-manager";  # Standard name for controller-manager
     else
-        configureAlts
+        configureAlts $component false;
         if [ -n "$prefix" ]; then
             orgName="${prefix}";
             # For other components, use the component name directly
@@ -501,4 +487,5 @@ function main() {
     info "finished main"
 }
 
+#create_host_certs;
 main;

@@ -6,7 +6,6 @@
 # Doc:
 #   Setups Kubernetes, ETCD, GO and Calico source directories to build and deploy a kubernetes cluster
 #
-set -x;
 _path=$(dirname "$0")
 MESSAGE_HEADER="source-builder";
 source "${_path}/common.sh";
@@ -27,6 +26,50 @@ function clone_repo() {
     # exec_c now returns status, allowing retry logic in clone_src to work.
     # Add the clone options to the command
     exec_c "${git} clone ${clone_opts} ${url}"
+}
+
+function ffr_build() {
+    info "starting frr_build";
+    local nproc=$(nproc);
+    nproc=$((nproc/2));
+
+    if [ ! -f './configure' ]; then
+    exec_c "./bootstrap.sh";
+    fi
+    exec_c "./configure --prefix=/usr --sysconfdir=/etc --runstatedir=/run --localstatedir=/var --enable-config-rollbacks --enable-sysrepo --enable-grpc --enable-zeromq --enable-lttng --enable-usdt --enable-protobuf --enable-scripting --enable-configfile-mask=0660 --enable-logfile-mask=0640 --enable-pcre2posix";
+    exec_c "./make -j$nproc";
+    exec_c "./make install";
+    exec_c "install -m644 tools/etc/frr/{daemons,support_bundle_commands.conf,frr.conf,vtysh.conf} /etc/frr/";
+    exec_c "install -m644 tools/frr.service /usr/lib/systemd/system/";
+    exec_c "install -m644 tools/frr@.service /usr/lib/systemd/system/";
+    exec_c "install -m644 tools/logrotate.d/frr /etc/logrotate.d/";
+    exec_c "install -m644 tools/iproute2/rt_protos.d/frr.conf /etc/iproute2/rt_addrprotos.d/";
+    exec_c "echo 'u! frr - \"frr routing\" /var/lib/frr' > /usr/lib/sysusers.d/frr.conf";
+    exec_c "echo 'd /run/frr 0755 frr frr' > /usr/lib/tmpfiles.d/frr.conf";
+    exec_c "echo 'd /var/lib/frr 0755 frr frr' > /usr/lib/tmpfiles.d/frr.conf";
+    exec_c "systemd-sysusers";
+    exec_c "systemd-tmpfiles --create /usr/lib/tmpfiles.d/frr.conf";
+    exec_c """cat >> /etc/services << EOT
+zebrasrv      2600/tcp                 # zebra service
+zebra         2601/tcp                 # zebra vty
+ripd          2602/tcp                 # RIPd vty
+ripngd        2603/tcp                 # RIPngd vty
+ospfd         2604/tcp                 # OSPFd vty
+bgpd          2605/tcp                 # BGPd vty
+ospf6d        2606/tcp                 # OSPF6d vty
+ospfapi       2607/tcp                 # ospfapi
+isisd         2608/tcp                 # ISISd vty
+babeld        2609/tcp                 # BABELd vty
+nhrpd         2610/tcp                 # nhrpd vty
+pimd          2611/tcp                 # PIMd vty
+ldpd          2612/tcp                 # LDPd vty
+eigprd        2613/tcp                 # EIGRPd vty
+bfdd          2617/tcp                 # bfdd vty
+fabricd       2618/tcp                 # fabricd vty
+vrrpd         2619/tcp                 # vrrpd vty
+EOT
+    """;
+    info "finished frr_build";
 }
 
 # Use pushd/popd as exec_c runs in a subshell
@@ -261,6 +304,20 @@ function helm_build() {
     exec_c "make install"
 }
 
+function etcd_cluster_ips() {
+    local cluster=$1;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
+    fi
+
+    for host in "${!peer_ips[@]}"; do
+        cluster+="https://${peer_ips[$host]}:2379,";
+    done
+    cluster="${cluster::-1}";
+
+}
 
 function calico_build() {
     info "starting calico_build";
@@ -320,40 +377,7 @@ function calico_build() {
     popd >/dev/null
 
     # 2. Generate Manifests
-    pushd ./manifests >/dev/null || { error_message "Failed to change directory to ./manifests" 1; return 1; }
     # Use command -v directly to find helm
-    HELM_C=$(command -v helm); 
-    if [ -x "$HELM_C" ]; then
-      # This relies on etcd_cluster_ips being defined/sourced (e.g., from common.sh or similar)
-      local cluster=etcd_cluster_ips; 
-
-      # Ensure YQ is available
-      if [ -z "$YQ" ] || [ ! -x "$YQ" ]; then
-          warning "YQ utility not found or not executable. Skipping manifest customization."
-      else
-          val_yml="../charts/calico/values.yaml";
-          local etcd_cert=$(cat "${CERTS_DIR}/etcd/certs/kube-etcd-peer.cert.pem")
-          local etcd_key=$(cat "${CERT_DIR}/etcd/private/kube-etcd-peer.key.pem")
-          local etcd_ca=$(cat "${CERT_DIR}/etcd/certs/etcd.cert.pem")
-          yq_write '.datastore="etcd"' $val_yml
-          yq_write '.etcd.tls.crt = $val' "$chart_values" "$etcd_cert"
-          yq_write '.etcd.tls.key = $val' "$chart_values" "$etcd_key"
-          yq_write '.etcd.tls.ca = $val' "$chart_values" "$etcd_ca"
-          yq_write '.network="calico"' $val_yml
-          yq_write '.bpf=true' $val_yml
-          yq_write '.includeCRDs=false' $val_yml
-
-          yq_write ".etcd.endpoints=\"${cluster}\"" $val_yml
-          yq_write ".tigeraOperator.image=\"tigera\/operator\"" $val_yml
-          yq_write ".tigeraOperator.registry=\"quay.io\"" $val_yml
-          yq_write ".tigeraOperator.version=\"master\"" $val_yml
-          # Ensure YQ and HELM paths are correctly passed if they are custom variables
-          exec_c "YQ=\"${YQ}\" HELM=\"${HELM_C}\" ./generate.sh";
-      fi
-    else
-      warning "Helm not found, skipping manifest generation."
-    fi
-    popd >/dev/null
 
     # 3. Build CNI Plugins (Directly, avoiding complex installer binary and mounts)
     
@@ -366,10 +390,10 @@ function calico_build() {
     #CGO_ENABLED=1 GOEXPERIMENT=boringcrypto go build -o bin/$arch/calico-node -tags fipsstrict -v -buildvcs=false -ldflags "-X main.VERSION=$CALICO_GIT_VERSION" ./node/cmd/calico-node
 
     # Build 'calico' CNI plugin
-    go build -o bin/$arch/calico -v -buildvcs=false -ldflags "-X main.VERSION=$CALICO_GIT_VERSION" ./cni-plugin/cmd/calico
+    go build -o bin/$arch/calico -v -buildvcs=false -ldflags "-X main.VERSION=$GIT_VERSION" ./cni-plugin/cmd/calico
     
     # Build 'calico-ipam' CNI plugin (Essential)
-    go build -o bin/$arch/calico-ipam -v -buildvcs=false -ldflags "-X main.VERSION=$CALICO_GIT_VERSION" ./node/cmd/calico-ipam
+    go build -o bin/$arch/calico-ipam -v -buildvcs=false -ldflags "-X main.VERSION=$GIT_VERSION" ./node/cmd/calico-ipam
 
     # We skip the 'install' binary as it requires complex environment setup (mounts) which proved unstable or impossible in restricted environments.
     # go build -o bin/$arch/install -v -buildvcs=false -ldflags "-X main.VERSION=$CALICO_GIT_VERSION" ./cni-plugin/cmd/install
@@ -406,7 +430,11 @@ function main() {
     clone_src "$CRITOOLS" "cri_tools_build";
     clone_src "$HELM" "helm_build";
     clone_src "$CALICO" "calico_build";
+    clone_src "$FRR" "frr_build";
     info "finished main";
 }
 
-main;
+#main;
+pushd /opt/cluster/src/calico
+calico_build
+popd;

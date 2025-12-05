@@ -6,7 +6,7 @@ cniBackend: 'calico-etcd'
 clusterIp: 172.12.12.125
 serviceCidr: 10.0.0.0/20
 clusterCidr: 10.3.0.0/16
-clusterDomain: local.silverstars.io
+clusterDomain: cluster.local
 clusterName: SilverStars
 buildDir: /opt/cluster
 kubeDir: /etc/kubernetes
@@ -14,3 +14,15 @@ kubePki: /etc/kubernetes/pki
 kubeletDir: /var/lib/kubelet
 kubeProxyDir: /var/lib/kube-proxy
 kubeLogDir: /var/log/kubernetes
+# --- BGP Configuration ---
+bgp:
+  enabled: true
+  # Autonomous System (AS) number for the Kubernetes cluster (e.g., private ASN 64512-65534)
+  asNumber: 64512
+  # List of local network routers (peers) to connect with
+  peers:
+    # Replace with the actual IP and ASN of your local router(s) on the control plane subnet
+    # Example: If 172.12.12.1 is your gateway/router
+    - address: 172.12.12.1
+      asNumber: 65000
+# -------------------------

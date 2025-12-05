@@ -1,7 +1,13 @@
-kind: KubeProxyConfiguration
 apiVersion: kubeproxy.config.k8s.io/v1alpha1
+kind: KubeProxyConfiguration
+clientConnection:
+  kubeconfig: "KUBECONFIG_PATH"
+clusterCIDR: "CLUSTER_CIDR"
+mode: "nftables"  # or "iptables" if using compat layer
 featureGates:
   NFTablesProxyMode: true
-clientConnection:
-  kubeconfig:
-mode: nftables
+nftables:
+  masqueradeAll: false
+  masqueradeBit: 14
+  minSyncPeriod: 1s
+  syncPeriod: 30s

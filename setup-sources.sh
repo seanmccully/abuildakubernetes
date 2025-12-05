@@ -305,7 +305,7 @@ function setup_kube_proxy() {
     yq_write ".clientConnection.kubeconfig=\"${kube_proxy_kubeconfig}\"" "$kube_proxy_config";
     # Removed cgroupDriver setting as it's typically for Kubelet, not Kube-proxy.
     # Added mode setting (e.g., iptables or ipvs)
-    yq_write ".mode=\"iptables\"" "$kube_proxy_config";
+    yq_write ".mode=\"nftables\"" "$kube_proxy_config";
 
     info "finished setup_kube_proxy"
 }

@@ -86,6 +86,7 @@ RUNC="https://github.com/opencontainers/runc.git";
 KUBE_DOCS="https://github.com/kubernetes/website.git"
 KEEPALIVED="https://github.com/acassen/keepalived.git"
 HELM="https://github.com/helm/helm";
+FRR="https://github.com/FRRouting/frr.git";
 CRITOOLS="https://github.com/kubernetes-sigs/cri-tools.git"
 
 # ====== DEFINE FUNCTIONS FIRST ======
@@ -210,7 +211,7 @@ yq_write() {
         if [ -n "$value" ]; then
             # If a value is provided, use --arg to pass it safely
             # This handles multiline strings properly
-            $YQ -y -i --arg val "$value" "$expression" "$file"
+            $YQ -y -i "$expression" --arg val "$value" "$file"
         else
             # Standard expression without value
             $YQ -y -i "$expression" "$file"
@@ -254,6 +255,9 @@ SERVICE_CIDR=$(yq_read '.serviceCidr' $config_yaml);
 CLUSTER_CIDR=$(yq_read '.clusterCidr' $config_yaml);
 CLUSTER_DOMAIN=$(yq_read '.clusterDomain' $config_yaml);
 KUBELET_DIR=$(yq_read '.kubeletDir' "$config_yaml");
+BGP_ENABLED=$(yq_read '.bgp.enabled // false' $config_yaml);
+# Use a default ASN if not specified (64512)
+BGP_AS_NUMBER=$(yq_read '.bgp.asNumber // 64512' $config_yaml);
 
 CERT_DIR="${BUILD_DIR}/certs";
 SRC_DIR="${BUILD_DIR}/src";
@@ -464,8 +468,10 @@ function set_peer_ips() {
 
 function etcd_initial_cluster() {
     local cluster="";
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-      set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
     fi
 
     for host in "${!peer_ips[@]}"; do
@@ -478,8 +484,10 @@ function etcd_initial_cluster() {
 
 function etcd_cluster_ips() {
     local cluster="";
-    if [ ${#peer_ips[@]} -eq 0 ]; then
-      set_peer_ips;
+    if [ ! -n "${peer_ip+defined}" ]; then
+    	  set_peer_ips;
+	elif [ ${#peer_ips[@]} -eq 0 ]; then
+    	  set_peer_ips;
     fi
 
     for host in "${!peer_ips[@]}"; do
